@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.turbo/
+.agentshield/
+coverage/
+*.log
+.env
+.env.*
+!.env.example
+apps/dashboard/.vite/

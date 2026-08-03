@@ -1,0 +1,19 @@
+{
+  "name": "@agentshield/api",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --format=cjs --outfile=dist/server.cjs",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/server.cjs"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.0.1",
+    "@agentshield/core": "workspace:*",
+    "@agentshield/memory": "workspace:*",
+    "@agentshield/runtime": "workspace:*",
+    "@agentshield/scanner": "workspace:*",
+    "fastify": "^5.4.0"
+  },
+  "devDependencies": { "esbuild": "^0.25.8", "tsx": "^4.20.3" }
+}

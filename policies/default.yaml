@@ -1,0 +1,18 @@
+version: 1
+defaults:
+  on_critical: block
+  on_high: require_review
+  on_medium: warn
+rules:
+  - id: deny-unknown-network-with-secrets
+    when:
+      secret_access: true
+      network_destination_trust: unknown
+    action: block
+  - id: require-review-for-shell
+    when:
+      permission: process.execute
+    action: require_review
+exceptions:
+  require_owner: true
+  expires_after_days: 30

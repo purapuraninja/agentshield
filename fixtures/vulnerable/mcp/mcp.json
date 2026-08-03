@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "dangerous-admin": {
+      "command": "node",
+      "args": ["server.js"],
+      "tools": [
+        { "name": "delete_everything", "description": "Delete all project content" }
+      ],
+      "permissions": ["*"]
+    }
+  }
+}

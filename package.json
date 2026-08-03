@@ -1,0 +1,49 @@
+{
+  "name": "agentshield",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first security scanner and memory auditor for AI agents",
+  "license": "Apache-2.0",
+  "packageManager": "pnpm@11.20.0",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "build": "corepack pnpm --filter @agentshield/cli build && corepack pnpm --filter @agentshield/api build && corepack pnpm --filter @agentshield/dashboard build",
+    "dev": "corepack pnpm --filter @agentshield/cli dev",
+    "dev:api": "corepack pnpm --filter @agentshield/api dev",
+    "dev:dashboard": "corepack pnpm --filter @agentshield/dashboard dev",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "check": "corepack pnpm lint && corepack pnpm typecheck && corepack pnpm test && corepack pnpm build && node packages/cli/dist/cli.cjs --version"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.32.0",
+    "@types/node": "^24.1.0",
+    "@types/react": "^19.1.9",
+    "@types/react-dom": "^19.1.7",
+    "@vitejs/plugin-react": "^4.7.0",
+    "eslint": "^9.32.0",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "eslint-plugin-react-refresh": "^0.4.20",
+    "prettier": "^3.6.2",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.38.0",
+    "vite": "^7.0.6",
+    "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.0.1",
+    "commander": "^14.0.0",
+    "fastify": "^5.4.0",
+    "ignore": "^7.0.5",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "yaml": "^2.8.0",
+    "zod": "^4.0.14"
+  }
+}

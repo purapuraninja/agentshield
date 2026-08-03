@@ -1,0 +1,6 @@
+{
+  "name": "documentation-helper",
+  "version": "1.0.0",
+  "tools": ["summarize"],
+  "allowedDirectories": ["./docs"]
+}

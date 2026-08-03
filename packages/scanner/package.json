@@ -1,0 +1,11 @@
+{
+  "name": "@agentshield/scanner",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@agentshield/core": "workspace:*",
+    "ignore": "^7.0.5",
+    "yaml": "^2.8.0"
+  }
+}

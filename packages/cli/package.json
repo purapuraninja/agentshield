@@ -1,0 +1,25 @@
+{
+  "name": "@agentshield/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Local-first security scanner and memory auditor for AI agents",
+  "license": "Apache-2.0",
+  "files": ["dist/cli.cjs"],
+  "engines": { "node": ">=22.13.0" },
+  "publishConfig": { "access": "public" },
+  "bin": { "agentshield": "dist/cli.cjs" },
+  "exports": "./src/cli.ts",
+  "scripts": {
+    "build": "esbuild src/cli.ts --bundle --platform=node --format=cjs --outfile=dist/cli.cjs --banner:js=\"#!/usr/bin/env node\"",
+    "dev": "tsx src/cli.ts"
+  },
+  "devDependencies": {
+    "@agentshield/core": "workspace:*",
+    "@agentshield/memory": "workspace:*",
+    "@agentshield/reports": "workspace:*",
+    "@agentshield/runtime": "workspace:*",
+    "@agentshield/scanner": "workspace:*",
+    "commander": "^14.0.0",
+    "esbuild": "^0.25.8"
+  }
+}
