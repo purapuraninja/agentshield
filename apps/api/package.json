@@ -11,6 +11,7 @@
     "@fastify/cors": "^11.0.1",
     "@agentshield/core": "workspace:*",
     "@agentshield/memory": "workspace:*",
+    "@agentshield/reports": "workspace:*",
     "@agentshield/runtime": "workspace:*",
     "@agentshield/scanner": "workspace:*",
     "fastify": "^5.4.0"

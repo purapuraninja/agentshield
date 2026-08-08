@@ -1,0 +1,59 @@
+# AgentShield VPS deployment stack.
+# Usage: see docs/operations/deploy-vps.md
+#
+# Requires a .env file in this directory with:
+#   AGENTSHIELD_DOMAIN=your-domain.example.com
+#   AGENTSHIELD_API_TOKEN=as_<generated-token>
+#   AGENTSHIELD_ALLOWED_ORIGINS=https://your-domain.example.com
+
+services:
+  api:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.api
+    environment:
+      AGENTSHIELD_HOST: 0.0.0.0
+      AGENTSHIELD_PORT: 4141
+      AGENTSHIELD_DATA_DIR: /data
+      AGENTSHIELD_API_TOKEN: ${AGENTSHIELD_API_TOKEN}
+      AGENTSHIELD_ALLOWED_ORIGINS: ${AGENTSHIELD_ALLOWED_ORIGINS}
+      AGENTSHIELD_RATE_LIMIT_MAX: 200
+      AGENTSHIELD_RATE_LIMIT_WINDOW_MS: 60000
+    volumes:
+      - agentshield-data:/data
+    networks:
+      - agentshield-internal
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  caddy:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    environment:
+      AGENTSHIELD_DOMAIN: ${AGENTSHIELD_DOMAIN}
+    networks:
+      - agentshield-internal
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  agentshield-data:
+  caddy-data:
+  caddy-config:
+
+networks:
+  agentshield-internal:
+    driver: bridge

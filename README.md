@@ -30,6 +30,14 @@ corepack pnpm dev -- scan ./my-skill --policy policies/default.yaml --ci
 Exit codes are `0` for pass, `1` for operational failure, `2` for block/severity failure, `3` for
 required review, and `4` for incomplete CI analysis.
 
+Baseline suppressions are exact-fingerprint, owned, reasoned, and expire after at most 365 days.
+Expired suppressions never hide findings. Writes use an atomic replacement to avoid a partially
+written baseline.
+
+Policy v2 supports typed predicates, nested `all`/`any`/`not` expressions, project/organization
+scope metadata, deterministic evaluation traces, and simulation across multiple historical reports.
+Policy v1 files remain supported for compatibility.
+
 ## CLI
 
 ```text
@@ -38,9 +46,15 @@ agentshield scan-mcp <config>
 agentshield permissions <target>
 agentshield diff <old> <new>
 agentshield policy check <report.json> <policy.yaml>
+agentshield policy simulate <policy.yaml> <report.json...> [--json] [--fail-on-block]
 agentshield report <report.json> --format html
 agentshield rules list
 agentshield explain AS-SC-001
+
+agentshield baseline create <report.json> --owner <name> --reason <reason> --output baseline.json
+agentshield baseline add <baseline.json> <report.json> --finding <sha256:fingerprint> --owner <name> --reason <reason>
+agentshield baseline validate <baseline.json>
+agentshield baseline prune <baseline.json>
 
 agentshield memory audit <json|jsonl|markdown|sqlite>
 agentshield memory quarantine <target> <memory-id> --actor <name> --reason <reason>
@@ -61,6 +75,12 @@ appear in a report. Quarantine never deletes or rewrites the source. AgentShield
 mode-0600 snapshot and append-only hash-chained audit log in `.agentshield/`; restore reverses the
 quarantine state.
 
+Memory inventory runs through a versioned, paginated, read-only adapter contract. Per-record detector
+results are cached in `.agentshield/memory-cache.json`; the cache key includes adapter, external ID,
+content and record fingerprints, detector version, privacy mode, and a daily freshness bucket. Use
+`--no-cache` to force reassessment or `--page-size <1..5000>` to tune inventory pages. Relational
+duplicate/conflict checks are always recomputed over the complete current inventory.
+
 ## Local API and dashboard
 
 Start both processes in separate terminals:
@@ -76,9 +96,17 @@ normalized reports under `.agentshield/`.
 
 ## Security model
 
+- JavaScript/TypeScript use AST analysis; JSON/JSONL/YAML/TOML/Markdown use structural parsers.
 - Static scans never import or execute target code.
+- Direct `.zip`, `.whl`, `.tar`, and `.tar.gz`/`.tgz` targets are decoded in memory with file-count,
+  expanded-size, compression-ratio, path-depth, entry-size, absolute-path, and traversal limits;
+  entries are never extracted to disk. Tar headers are checksum-verified, and archived hard links and
+  symlinks are rejected.
 - Symbolic links, oversized files, build output, and dependency directories are skipped.
-- Parser failures create an explicit incomplete-analysis finding.
+- Parser failures, including stack exhaustion on pathologically nested input, are contained and create
+  an explicit incomplete-analysis finding rather than a falsely clean result.
+- Conservative Python/shell analysis creates an explicit analysis-gap finding instead of silently
+  claiming AST coverage.
 - Raw credentials are redacted before evidence or error serialization.
 - Runtime payloads are hashed; sensitive metadata keys become hashes.
 - Cloud upload, automatic hard deletion, LLM classification, and telemetry are disabled.

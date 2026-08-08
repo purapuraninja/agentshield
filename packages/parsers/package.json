@@ -1,0 +1,11 @@
+{
+  "name": "@agentshield/parsers",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "smol-toml": "^1.4.2",
+    "typescript": "^5.8.3",
+    "yaml": "^2.8.0"
+  }
+}

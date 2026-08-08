@@ -1,0 +1,27 @@
+# Azure Pipelines example for AgentShield. Fails the pipeline on a block/severity outcome.
+trigger:
+  branches:
+    include: [main]
+pr:
+  branches:
+    include: [main]
+jobs:
+  - job: agentshield_scan
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+      - task: UseNode@1
+        inputs:
+          version: 22.x
+      - script: |
+          npm install -g agentshield@latest
+          agentshield scan . --format sarif --output $(Build.ArtifactStagingDirectory)/agentshield.sarif --ci --policy policies/default.yaml
+        displayName: AgentShield scan
+      - script: agentshield memory audit ./memory/memories.jsonl --format bundle --output $(Build.ArtifactStagingDirectory)/agentshield-memory-bundle.json
+        displayName: AgentShield memory audit
+        continueOnError: true
+      - task: PublishBuildArtifacts@1
+        inputs:
+          PathtoPublish: $(Build.ArtifactStagingDirectory)
+          ArtifactName: agentshield
+        condition: always()

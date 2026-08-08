@@ -109,7 +109,7 @@ export const staticRules: StaticRule[] = [
   {
     id: 'AS-SC-017', title: 'Prompt-injection instruction', severity: 'high', confidence: 'high', category: 'prompt-injection',
     description: 'Content attempts to override higher-priority instructions or safety controls.',
-    patterns: [/(?:ignore|disregard|forget)\s+(?:all\s+)?(?:previous|prior|system|developer)\s+instructions?/i, /(?:reveal|print|send)\s+(?:the\s+)?(?:system prompt|secrets?|credentials?)/i, /(?:bypass|disable)\s+(?:approval|policy|safety|guardrail)/i],
+    patterns: [/(?:ignore|disregard|forget)\s+(?:all\s+)?(?:previous|prior|system|developer)\s+instructions?/i, /(?:reveal|print|send)\s+(?:the\s+)?(?:system prompt|secrets?|credentials?)/i, /(?:bypass|disable)\s+(?:approval|policy|safety|guardrail)/i, /(?:abaikan|hiraukan)\s+(?:semua\s+)?(?:instruksi|perintah)\s+(?:sebelumnya|terdahulu)/i, /(?:nonaktifkan|lewati)\s+(?:persetujuan|kebijakan|pengamanan?)/i, /(?:bocorkan|kirim)\s+(?:system prompt|rahasia|kredensial)/i],
     remediation: 'Remove override language and express the required behavior as a scoped, declarative capability.', owner: 'core-security', reviewDate: '2026-08-01', limitations: 'Security education text may quote attacks.'
   },
   {
@@ -149,7 +149,7 @@ export const staticRules: StaticRule[] = [
     remediation: 'Ship reviewed executable files with known hashes instead of changing permissions at runtime.', owner: 'core-security', reviewDate: '2026-08-01', limitations: 'Installer scripts commonly need this capability.'
   },
   {
-    id: 'AS-SC-024', title: 'MCP tool may have destructive side effects', severity: 'high', confidence: 'medium', category: 'mcp',
+    id: 'AS-SC-024', title: 'MCP tool may have destructive side effects', severity: 'high', confidence: 'high', category: 'mcp',
     description: 'A tool description or name suggests deletion or mutation without an approval declaration.',
     patterns: [/["'](?:name|description)["']\s*:\s*["'][^"']*(?:delete|remove|drop|terminate|send|publish)[^"']*["'](?![\s\S]{0,200}(?:approval|required|confirm))/i],
     remediation: 'Declare side effects explicitly and require confirmation or policy approval before execution.', extensions: ['.json', '.yaml', '.yml', '.toml'], owner: 'core-security', reviewDate: '2026-08-01', limitations: 'Approval declarations far from the tool can be missed.'
@@ -159,6 +159,13 @@ export const staticRules: StaticRule[] = [
     description: 'A wildcard grants access beyond a clearly bounded resource.',
     patterns: [/["'](?:permissions?|tools?|allowedDirectories|roots)["']\s*:\s*\[[^\]]*["']\*["']/i, /["']scope["']\s*:\s*["'](?:\*|all)["']/i],
     remediation: 'Replace wildcard access with the minimum exact tools, paths, and operations required.', extensions: ['.json', '.yaml', '.yml', '.toml'], owner: 'core-security', reviewDate: '2026-08-01', limitations: 'Schema semantics vary by ecosystem.'
+  },
+  {
+    id: 'AS-SC-026', title: 'Invisible Unicode control characters', severity: 'high', confidence: 'high', category: 'prompt-injection',
+    description: 'Zero-width or bidirectional control characters can conceal instructions or make reviewed text differ from interpreted text.',
+    patterns: [/[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/],
+    remediation: 'Remove invisible control characters, normalize trusted text, and render control-code locations during review.',
+    extensions: ['.md', '.mdx', '.html', '.htm', '.json', '.yaml', '.yml', '.toml'], owner: 'core-security', reviewDate: '2026-08-04', limitations: 'Some internationalized text may legitimately contain directional controls.'
   }
 ];
 

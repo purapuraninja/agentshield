@@ -1,16 +1,36 @@
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { lstat, readFile, readdir } from 'node:fs/promises';
 import { basename, dirname, extname, join, relative, resolve } from 'node:path';
 import ignore, { type Ignore } from 'ignore';
-import YAML from 'yaml';
 import {
   SCHEMA_VERSION, VERSION, calculateOverallRisk, createId, maskEvidence, normalizePath, redactSecrets,
   scanReportSchema, sha256, severityRank, type Component, type Finding, type Permission,
   type RiskDimensions, type ScanReport, type Severity
 } from '@agentshield/core';
+import { normalizeByteOrderMark, parseSource, type OperationKind, type ParsedFile, type SourceLocation } from '@agentshield/parsers';
 import { staticRules, type StaticRule } from './rules.js';
+import { validateBaseline, type Baseline } from './baseline.js';
+import { archiveFormatForPath, inspectArchive, type ArchiveLimits } from './archive.js';
+import { buildProvenanceIndex, isProvenanceFile, provenanceForPath, type ProvenanceInput } from './provenance.js';
 
 export { getRule, staticRules, type StaticRule } from './rules.js';
-export { evaluatePolicy, loadPolicy, type PolicyFile, type PolicyRule } from './policy.js';
+export {
+  evaluatePolicy, loadPolicy, simulatePolicy, validatePolicy, type ExpressionTrace, type LegacyPolicyWhen,
+  type PolicyEvaluation, type PolicyExpression, type PolicyField, type PolicyFile, type PolicyOperator,
+  type PolicyPredicate, type PolicyRule, type PolicyRuleTrace
+} from './policy.js';
+export {
+  addBaselineSuppressions, createBaseline, loadBaseline, parseBaseline, pruneExpiredSuppressions,
+  saveBaseline, validateBaseline, type Baseline, type BaselineSelection, type BaselineSuppression,
+  type BaselineValidation
+} from './baseline.js';
+export {
+  DEFAULT_ARCHIVE_LIMITS, archiveFormatForPath, inspectArchive, inspectTarArchive, inspectZipArchive,
+  type ArchiveFormat, type ArchiveInspection, type ArchiveLimits
+} from './archive.js';
+export {
+  buildProvenanceIndex, isProvenanceFile, provenanceForPath,
+  type ProvenanceIndex, type ProvenanceInput
+} from './provenance.js';
 
 const SUPPORTED_EXTENSIONS = new Set([
   '.md', '.mdx', '.json', '.jsonl', '.yaml', '.yml', '.toml', '.js', '.mjs', '.cjs', '.ts', '.tsx',
@@ -19,9 +39,13 @@ const SUPPORTED_EXTENSIONS = new Set([
 const ALWAYS_IGNORED = ['.git/', 'node_modules/', 'dist/', 'build/', 'coverage/', '.agentshield/'];
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 
-interface DiscoveredFile { absolute: string; relative: string; size: number }
-export interface ScanOptions { baseline?: Baseline; maxFileBytes?: number }
-export interface Baseline { version: 1; suppressions: Array<{ fingerprint: string; owner: string; reason: string; expiresAt: string }> }
+interface DiscoveredFile { absolute: string; relative: string; size: number; content?: string }
+export interface ScanOptions {
+  baseline?: Baseline;
+  maxFileBytes?: number;
+  maxArchiveBytes?: number;
+  archiveLimits?: Partial<ArchiveLimits>;
+}
 
 async function buildIgnore(root: string): Promise<Ignore> {
   const matcher = ignore().add(ALWAYS_IGNORED);
@@ -31,9 +55,9 @@ async function buildIgnore(root: string): Promise<Ignore> {
   return matcher;
 }
 
-async function discover(target: string, maxFileBytes: number): Promise<{ files: DiscoveredFile[]; errors: string[] }> {
+async function discover(target: string, maxFileBytes: number, options: ScanOptions): Promise<{ files: DiscoveredFile[]; errors: string[] }> {
   const absoluteTarget = resolve(target);
-  const targetStat = await stat(absoluteTarget);
+  const targetStat = await lstat(absoluteTarget);
   const root = targetStat.isDirectory() ? absoluteTarget : dirname(absoluteTarget);
   const matcher = await buildIgnore(root);
   const files: DiscoveredFile[] = [];
@@ -50,15 +74,42 @@ async function discover(target: string, maxFileBytes: number): Promise<{ files: 
       if (entry.isSymbolicLink()) { errors.push(`${rel}: symbolic link skipped`); continue; }
       if (entry.isDirectory()) await walk(absolute);
       else if (entry.isFile() && (SUPPORTED_EXTENSIONS.has(extname(entry.name).toLowerCase()) || /^skill\.md$/i.test(entry.name))) {
-        const info = await stat(absolute);
+        const info = await lstat(absolute);
         if (info.size > maxFileBytes) errors.push(`${rel}: exceeds ${maxFileBytes} byte limit`);
         else files.push({ absolute, relative: rel || entry.name, size: info.size });
       }
     }
   }
 
-  if (targetStat.isFile()) {
-    if (targetStat.size <= maxFileBytes) files.push({ absolute: absoluteTarget, relative: basename(absoluteTarget), size: targetStat.size });
+  if (targetStat.isSymbolicLink()) errors.push(`${basename(absoluteTarget)}: symbolic link target rejected`);
+  else if (targetStat.isFile()) {
+    const targetName = basename(absoluteTarget);
+    const archiveFormat = archiveFormatForPath(targetName);
+    if (archiveFormat) {
+      const maxArchiveBytes = options.maxArchiveBytes ?? 20 * 1024 * 1024;
+      if (targetStat.size > maxArchiveBytes) errors.push(`${targetName}: exceeds ${maxArchiveBytes} byte archive limit`);
+      else {
+        try {
+          const archive = inspectArchive(
+            archiveFormat,
+            await readFile(absoluteTarget),
+            (path) => SUPPORTED_EXTENSIONS.has(extname(path).toLowerCase()) || /^skill\.md$/i.test(basename(path)),
+            maxFileBytes,
+            options.archiveLimits
+          );
+          files.push(...archive.entries.map((entry) => ({
+            absolute: absoluteTarget,
+            relative: `${targetName}!/${entry.path}`,
+            size: entry.size,
+            content: entry.content
+          })));
+          errors.push(...archive.errors.map((error) => `${targetName}!/${error}`));
+          if (!archive.entries.length && !archive.errors.length) errors.push(`${targetName}: archive contains no supported source files`);
+        } catch (error) { errors.push(`${targetName}: ${String(error)}`); }
+      }
+    }
+    else if (!(SUPPORTED_EXTENSIONS.has(extname(targetName).toLowerCase()) || /^skill\.md$/i.test(targetName))) errors.push(`${targetName}: unsupported file format`);
+    else if (targetStat.size <= maxFileBytes) files.push({ absolute: absoluteTarget, relative: targetName, size: targetStat.size });
     else errors.push(`${basename(absoluteTarget)}: exceeds ${maxFileBytes} byte limit`);
   } else await walk(absoluteTarget);
   files.sort((a, b) => a.relative.localeCompare(b.relative));
@@ -102,7 +153,25 @@ function scanRules(path: string, content: string): Finding[] {
   return findings;
 }
 
-function secretNetworkChain(path: string, content: string): Finding | undefined {
+function secretNetworkChain(path: string, content: string, parsed: ParsedFile): Finding | undefined {
+  const flow = parsed.secretFlows[0];
+  if (flow) {
+    const sourceLine = content.split(/\r?\n/)[flow.source.line - 1] ?? flow.sourceName;
+    const sinkLine = content.split(/\r?\n/)[flow.sink.line - 1] ?? flow.sinkName;
+    const excerpt = maskEvidence(sinkLine);
+    return {
+      id: fingerprint('AS-SC-001', path, excerpt), ruleId: 'AS-SC-001', title: 'Secret-derived value reaches a network sink',
+      description: 'AST data-flow analysis found an environment-derived value in an outbound network call.',
+      severity: 'critical', confidence: 'high', category: 'exfiltration',
+      evidence: [
+        { path, line: flow.source.line, column: flow.source.column, excerpt: maskEvidence(sourceLine), redacted: true },
+        { path, line: flow.sink.line, column: flow.sink.column, excerpt, redacted: true }
+      ],
+      remediation: 'Separate secret access from networking and allow-list a trusted destination with explicit field-level redaction.',
+      status: 'open', metadata: { analysis: 'ast-data-flow', sourceName: flow.sourceName, sinkName: flow.sinkName, destination: flow.destination, through: flow.through }
+    };
+  }
+  if (parsed.mode === 'ast' && !parsed.diagnostics.some((diagnostic) => diagnostic.severity === 'error')) return;
   const secret = /process\.env|os\.(?:environ|getenv)|\$env:|(?:API_KEY|TOKEN|SECRET|PASSWORD)/i.exec(content);
   const network = /fetch\s*\(|axios\.|requests\.|https?\.request|curl\b|Invoke-(?:WebRequest|RestMethod)/i.exec(content);
   if (!secret || !network) return;
@@ -110,12 +179,27 @@ function secretNetworkChain(path: string, content: string): Finding | undefined 
     id: 'AS-SC-001', title: 'Secret access and network sink in the same file', severity: 'critical', confidence: 'high', category: 'exfiltration',
     description: 'The file reads secret-bearing state and also performs an outbound network operation.', patterns: [],
     remediation: 'Separate secret access from networking and allow-list a trusted destination with explicit field-level redaction.',
-    owner: 'core-security', reviewDate: '2026-08-01', limitations: 'This taint-lite rule does not prove that the same value reaches the sink.'
+    owner: 'core-security', reviewDate: '2026-08-01', limitations: 'Non-JS/TS fallback does not prove that the same value reaches the sink.'
   };
   const finding = makeFinding(rule, path, content, network);
   const secretLoc = lineAndColumn(content, secret.index);
   finding.evidence.unshift({ path, line: secretLoc.line, column: secretLoc.column, excerpt: maskEvidence(secretLoc.sourceLine), redacted: true });
   return finding;
+}
+
+function structuredToolFindings(path: string, content: string, parsed: ParsedFile): Finding[] {
+  return parsed.tools.filter((tool) => tool.destructive && !tool.approvalDeclared).map((tool) => {
+    const sourceLine = content.split(/\r?\n/)[tool.location.line - 1] ?? tool.name;
+    const excerpt = maskEvidence(sourceLine);
+    return {
+      id: fingerprint('AS-SC-024', path, excerpt), ruleId: 'AS-SC-024', title: 'MCP tool has undeclared destructive side effects',
+      description: `Structured tool definition “${tool.name}” suggests mutation or an external side effect without an approval declaration.`,
+      severity: 'high' as const, confidence: 'high' as const, category: 'mcp',
+      evidence: [{ path, line: tool.location.line, column: tool.location.column, excerpt, redacted: false }],
+      remediation: 'Declare side effects explicitly and require confirmation or policy approval before execution.',
+      status: 'open' as const, metadata: { analysis: 'structured-config', toolName: tool.name }
+    };
+  });
 }
 
 const PERMISSION_PATTERNS: Array<{ re: RegExp; resource: string; action: string; risk: Severity }> = [
@@ -132,8 +216,33 @@ const PERMISSION_PATTERNS: Array<{ re: RegExp; resource: string; action: string;
   { re: /(?:npm|pnpm|yarn|pip)\s+(?:add|install|exec|dlx)/i, resource: 'package-manager', action: 'install-or-execute', risk: 'high' }
 ];
 
-function mapPermissions(path: string, content: string): Permission[] {
+const OPERATION_PERMISSIONS: Record<OperationKind, { resource: string; action: string; risk: Severity }> = {
+  'environment.read': { resource: 'environment', action: 'read', risk: 'medium' },
+  'filesystem.read': { resource: 'filesystem', action: 'read', risk: 'low' },
+  'filesystem.write': { resource: 'filesystem', action: 'write', risk: 'medium' },
+  'filesystem.delete': { resource: 'filesystem', action: 'delete', risk: 'high' },
+  'network.connect': { resource: 'network', action: 'connect', risk: 'medium' },
+  'process.execute': { resource: 'process', action: 'execute', risk: 'high' },
+  'database.connect': { resource: 'database', action: 'connect', risk: 'medium' },
+  'browser.automate': { resource: 'browser', action: 'automate', risk: 'medium' },
+  'messaging.send': { resource: 'messaging', action: 'send', risk: 'high' },
+  'git.modify': { resource: 'git', action: 'modify', risk: 'medium' },
+  'package-manager.execute': { resource: 'package-manager', action: 'install-or-execute', risk: 'high' }
+};
+
+function evidenceAt(path: string, content: string, location: SourceLocation): Permission['evidence'] {
+  const sourceLine = content.split(/\r?\n/)[location.line - 1] ?? '';
+  const excerpt = maskEvidence(sourceLine);
+  return { path, line: location.line, column: location.column, excerpt, redacted: excerpt.includes('[REDACTED:') };
+}
+
+function mapPermissions(path: string, content: string, parsed: ParsedFile): Permission[] {
   const result: Permission[] = [];
+  for (const operation of parsed.operations) {
+    const mapped = OPERATION_PERMISSIONS[operation.kind];
+    result.push({ resource: mapped.resource, action: mapped.action, scope: operation.scope, risk: mapped.risk, evidence: evidenceAt(path, content, operation.location) });
+  }
+  if (parsed.mode === 'ast' && !parsed.diagnostics.some((diagnostic) => diagnostic.severity === 'error')) return result;
   for (const pattern of PERMISSION_PATTERNS) {
     const match = pattern.re.exec(content);
     if (!match) continue;
@@ -154,21 +263,21 @@ function inferScope(content: string, index: number): string {
   return 'unspecified';
 }
 
-function validateStructured(path: string, content: string): string | undefined {
-  const extension = extname(path).toLowerCase();
-  try {
-    if (extension === '.json') JSON.parse(content);
-    if (extension === '.yaml' || extension === '.yml') YAML.parse(content);
-  } catch (error) { return String(error); }
-  return;
-}
-
-function incompleteFinding(path: string, error: string): Finding {
+function incompleteFinding(path: string, error: string, location?: SourceLocation, code = 'PARSE_ERROR'): Finding {
   return {
     id: fingerprint('AS-SC-900', path, error), ruleId: 'AS-SC-900', title: 'Incomplete analysis',
     description: 'The file could not be fully parsed, so the scan may have missed behavior.', severity: 'medium', confidence: 'high', category: 'parser',
-    evidence: [{ path, line: 1, column: 1, excerpt: maskEvidence(error), redacted: false }],
-    remediation: 'Correct the syntax or use a supported format, then scan again.', status: 'open', metadata: {}
+    evidence: [{ path, line: location?.line ?? 1, column: location?.column ?? 1, excerpt: maskEvidence(error), redacted: false }],
+    remediation: 'Correct the syntax or use a supported format, then scan again.', status: 'open', metadata: { diagnosticCode: code }
+  };
+}
+
+function analysisGapFinding(path: string, message: string, location: SourceLocation, code: string): Finding {
+  return {
+    id: fingerprint('AS-SC-901', path, message), ruleId: 'AS-SC-901', title: 'Conservative analysis fallback',
+    description: 'This file was scanned without full AST-level data-flow analysis.', severity: 'low', confidence: 'high', category: 'parser',
+    evidence: [{ path, line: location.line, column: location.column, excerpt: maskEvidence(message), redacted: false }],
+    remediation: 'Review high-risk behavior manually or enable an AST-capable parser for this language.', status: 'open', metadata: { diagnosticCode: code }
   };
 }
 
@@ -178,6 +287,15 @@ function dedupePermissions(items: Permission[]): Permission[] {
     const key = `${item.resource}:${item.action}:${item.scope}:${item.evidence.path}`;
     if (seen.has(key)) return false;
     seen.add(key); return true;
+  });
+}
+
+function dedupeFindings(items: Finding[]): Finding[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    if (seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
   });
 }
 
@@ -201,47 +319,79 @@ function componentType(path: string, content: string): Component['type'] {
 
 export async function scanTarget(target: string, options: ScanOptions = {}): Promise<ScanReport> {
   const startedAt = new Date().toISOString();
-  const { files, errors } = await discover(target, options.maxFileBytes ?? MAX_FILE_BYTES);
-  let findings: Finding[] = [];
+  const maxFileBytes = options.maxFileBytes ?? MAX_FILE_BYTES;
+  const { files, errors } = await discover(target, maxFileBytes, options);
+
+  // Manifests and lockfiles are read first so every scanned file can be attributed to its package.
+  const provenanceInputs: ProvenanceInput[] = [];
+  for (const file of files.filter((candidate) => isProvenanceFile(candidate.relative))) {
+    try {
+      const content = file.content ?? await readFile(file.absolute, 'utf8');
+      provenanceInputs.push({ path: file.relative, content });
+    } catch (error) { errors.push(`${file.relative}: ${String(error)}`); }
+  }
+  const provenanceIndex = buildProvenanceIndex(provenanceInputs);
+  errors.push(...provenanceIndex.errors);
+
+  let findings: Finding[] = errors.map((error) => incompleteFinding(error.split(':', 1)[0] || normalizePath(target), error, undefined, 'DISCOVERY_GAP'));
   let permissions: Permission[] = [];
   const components: Component[] = [];
   for (const file of files) {
     let content: string;
-    try { content = await readFile(file.absolute, 'utf8'); }
+    try {
+      if (file.content !== undefined) content = file.content;
+      else {
+        const current = await lstat(file.absolute);
+        if (current.isSymbolicLink()) throw new Error('symbolic link appeared after discovery');
+        if (!current.isFile()) throw new Error('target is no longer a regular file');
+        if (current.size > maxFileBytes) throw new Error(`file grew beyond ${maxFileBytes} byte limit`);
+        content = await readFile(file.absolute, 'utf8');
+      }
+    }
     catch (error) { errors.push(`${file.relative}: ${String(error)}`); findings.push(incompleteFinding(file.relative, String(error))); continue; }
-    findings.push(...scanRules(file.relative, content));
-    const chain = secretNetworkChain(file.relative, content);
+    // A leading BOM is legal and common. It is neutralized for analysis so it cannot be reported as a
+    // hidden control character, while the component hash below still covers the real file content.
+    const analyzed = normalizeByteOrderMark(content);
+    const parsed = parseSource(file.relative, analyzed);
+    findings.push(...structuredToolFindings(file.relative, analyzed, parsed));
+    findings.push(...scanRules(file.relative, analyzed));
+    const chain = secretNetworkChain(file.relative, analyzed, parsed);
     if (chain) findings.push(chain);
-    permissions.push(...mapPermissions(file.relative, content));
-    const parseError = validateStructured(file.relative, content);
-    if (parseError) { errors.push(`${file.relative}: ${parseError}`); findings.push(incompleteFinding(file.relative, parseError)); }
+    permissions.push(...mapPermissions(file.relative, analyzed, parsed));
+    for (const diagnostic of parsed.diagnostics) {
+      if (diagnostic.severity === 'error') {
+        const message = `${file.relative}:${diagnostic.location.line}:${diagnostic.location.column} [${diagnostic.code}] ${diagnostic.message}`;
+        errors.push(message);
+        findings.push(incompleteFinding(file.relative, diagnostic.message, diagnostic.location, diagnostic.code));
+      } else findings.push(analysisGapFinding(file.relative, diagnostic.message, diagnostic.location, diagnostic.code));
+    }
+    const provenance = provenanceForPath(provenanceIndex, file.relative);
     components.push({
       id: sha256(file.relative).slice(0, 31), type: componentType(file.relative, content), name: basename(file.relative),
-      hash: sha256(content), source: file.relative, signatureStatus: 'unknown'
+      version: provenance?.resolvedVersion ?? provenance?.declaredVersion,
+      hash: sha256(content), source: file.relative, signatureStatus: 'unknown',
+      ...(provenance ? { provenance } : {})
     });
   }
+  findings = dedupeFindings(findings);
   permissions = dedupePermissions(permissions);
   const now = Date.now();
   if (options.baseline) {
+    const validation = validateBaseline(options.baseline, new Date(now));
+    if (!validation.valid) throw new Error(`Invalid baseline: ${validation.invalid.join('; ')}`);
     const valid = new Set(options.baseline.suppressions.filter((item) => Date.parse(item.expiresAt) > now && item.owner && item.reason).map((item) => item.fingerprint));
     findings = findings.map((finding) => valid.has(finding.id) ? { ...finding, status: 'suppressed' as const } : finding);
   }
   findings.sort((a, b) => severityRank[b.severity] - severityRank[a.severity] || a.ruleId.localeCompare(b.ruleId));
   const risk = calculateDimensions(findings.filter((item) => item.status !== 'suppressed'), permissions);
   const report: ScanReport = {
-    schemaVersion: SCHEMA_VERSION, scanId: createId('scan'), scannerVersion: VERSION, rulepackVersion: '2026.08.1',
+    schemaVersion: SCHEMA_VERSION, scanId: createId('scan'), scannerVersion: VERSION, rulepackVersion: '2026.08.2',
     target: resolve(target), startedAt, completedAt: new Date().toISOString(), status: errors.length ? 'partial' : 'completed',
     filesScanned: files.length, bytesScanned: files.reduce((sum, file) => sum + file.size, 0), components, permissions, findings,
     risk, overallRisk: findings.some((item) => item.severity === 'critical' && item.status === 'open') ? 100 : calculateOverallRisk(risk),
     errors: errors.map(redactSecrets)
   };
   return scanReportSchema.parse(report);
-}
-
-export async function loadBaseline(path: string): Promise<Baseline> {
-  const value = JSON.parse(await readFile(path, 'utf8')) as Baseline;
-  if (value.version !== 1 || !Array.isArray(value.suppressions)) throw new Error('Invalid baseline format');
-  return value;
 }
 
 export interface ScanDiff {

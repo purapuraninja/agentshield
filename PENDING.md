@@ -4,7 +4,7 @@ Dokumen ini adalah gap analysis antara `AGENTSHIELD_DEVELOPMENT_PLAN.md` dan imp
 v0.1.0 saat ini. Tujuannya adalah menjelaskan apa yang belum selesai, mengapa belum dianggap
 production-ready, serta urutan implementasi yang aman.
 
-Terakhir diperbarui: 2026-08-03.
+Terakhir diperbarui: 2026-08-08.
 
 ## Arti status
 
@@ -14,8 +14,9 @@ Terakhir diperbarui: 2026-08-03.
 
 ## Baseline yang sudah tersedia
 
-- [x] CLI lokal, schema Zod, static scanner, permission map, dan 24 deterministic supply-chain
+- [x] CLI lokal, schema Zod, static scanner, permission map, dan 25 deterministic supply-chain
   rules.
+- [x] Parser IR, AST JavaScript/TypeScript, serta parsing struktural JSON/JSONL/YAML/TOML/Markdown.
 - [x] Laporan JSON, SARIF, HTML, serta CycloneDX-compatible AgentBOM.
 - [x] YAML policy evaluation, baseline consumption, diff, CI exit code, rule list, dan explain.
 - [x] Audit read-only untuk JSON, JSONL, Markdown, serta SQLite.
@@ -24,7 +25,7 @@ Terakhir diperbarui: 2026-08-03.
 - [x] Quarantine/restore lokal berbasis sidecar dengan snapshot dan hash-chained audit log.
 - [x] Sanitized runtime event store dan evidence graph lokal.
 - [x] Loopback REST API dan dashboard lokal untuk overview, scan, findings, serta permissions.
-- [x] Lint, typecheck, 16 automated tests, cross-platform CI skeleton, Docker API, dan fixtures dasar.
+- [x] Lint, typecheck, 46 automated tests, cross-platform CI skeleton, Docker API, dan fixtures dasar.
 
 ## Ringkasan prioritas
 
@@ -44,88 +45,104 @@ Terakhir diperbarui: 2026-08-03.
 
 ### Yang masih parsial
 
-- [~] JavaScript/TypeScript, Python, dan shell masih dianalisis terutama dengan regular expression,
-  belum dengan AST/control-flow representation.
-- [~] JSON dan YAML divalidasi, tetapi TOML belum diparse secara struktural.
-- [~] Markdown belum mempunyai parser front matter, link, command, code block, hidden Unicode, dan
-  instruction phrase yang terpisah.
-- [~] Rule `AS-SC-001` hanya taint-lite dalam satu file; belum membuktikan secret benar-benar mencapai
-  network sink.
+- [x] JavaScript/TypeScript sudah memakai AST dan common intermediate representation untuk imports,
+  calls, operations, permissions, serta intra-file data flow.
+- [~] Python dan shell sudah menghasilkan conservative operation IR serta analysis-gap finding,
+  tetapi belum memakai AST.
+- [x] JSON, JSONL, YAML, dan TOML sudah diparse secara struktural dengan diagnostics.
+- [x] Markdown sudah memparse front matter, link, command, code block, hidden HTML instruction, dan
+  invisible Unicode.
+- [~] Rule `AS-SC-001` membuktikan intra-file identifier flow untuk JavaScript/TypeScript; Python dan
+  shell masih memakai taint-lite fallback dan inter-file flow belum tersedia.
 - [~] MCP tool mismatch hanya heuristic teks; belum membandingkan tool schema, declared permissions,
   dan implementasi handler.
-- [~] Discovery sudah menghormati `.gitignore`/`.agentshieldignore`, tetapi belum memindai archive,
-  package metadata, lockfile provenance, Git ref, checksum, atau signature.
-- [ ] Dukungan packaged extension seperti `.zip`, `.tgz`, wheel, dan npm tarball dengan proteksi
-  archive bomb/path traversal.
+- [~] Discovery sudah menghormati `.gitignore`/`.agentshieldignore`, direct archive target, serta
+  package metadata dan lockfile provenance (`package.json`, `pyproject.toml`, npm/pnpm lockfile);
+  Git ref, container digest, dan signature verification belum tersedia.
+- [x] Direct `.zip`, `.whl`, `.tar`, dan `.tar.gz`/`.tgz` dipindai in-memory dengan proteksi archive
+  bomb, path traversal, tar checksum, serta penolakan hard link/symlink. Nested archive belum dibuka.
 - [ ] Rulepack manifest bertanda tangan, updater, rollback rulepack, dan verifikasi publisher.
 - [ ] Optional sandboxed dynamic analysis.
 
 ### Cara mengimplementasikan
 
-1. Tambahkan package `packages/parsers` dan common intermediate representation:
+1. [x] Tambahkan package `packages/parsers` dan common intermediate representation:
    `FileNode`, `CallNode`, `DataSource`, `DataSink`, `ToolDefinition`, serta `ParseDiagnostic`.
-2. Gunakan TypeScript Compiler API untuk JS/TS, Python worker terisolasi berbasis `ast`, parser shell
+2. [~] Gunakan TypeScript Compiler API untuk JS/TS, Python worker terisolasi berbasis `ast`, parser shell
    yang tidak mengeksekusi input, `remark` untuk Markdown, serta parser JSON/YAML/TOML yang strict.
-3. Ubah rule engine agar rule menerima IR, bukan raw text. Regex tetap dipakai sebagai conservative
+3. [~] Ubah rule engine agar rule menerima IR, bukan raw text. Permission mapping dan rules tertentu
+   sudah memakai IR; regex tetap dipakai sebagai conservative
    fallback dan setiap fallback harus menurunkan confidence atau menghasilkan analysis gap.
-4. Bangun intra-file data flow untuk source `process.env`, credential files, dan secret manager output
+4. [~] Bangun intra-file data flow untuk source `process.env`, credential files, dan secret manager output
    menuju sink `fetch`, HTTP clients, messaging, logs, atau child process.
 5. Untuk MCP, normalkan server, tools, input schema, annotations, declared side effects, dan handler
    references. Bandingkan destructive implementation dengan description/approval declaration.
-6. Ekstrak package name, exact version, repository URL, lockfile resolution, integrity hash, container
-   digest, dan signature status ke component inventory.
-7. Untuk archive, ekstrak hanya ke temporary directory dengan batas jumlah file, total expanded size,
-   compression ratio, depth, dan canonical path containment.
+6. [~] Package name, declared/resolved version, repository URL, lockfile resolution, integrity hash,
+   serta unpinned/remote dependency sudah masuk `Component.provenance`. Container digest dan signature
+   status belum tersedia.
+7. [x] ZIP, wheel, tar, dan tar.gz diproses sebagai virtual files tanpa ekstraksi dengan batas jumlah
+   file, total expanded size, compression ratio, depth, entry size, absolute path, dan traversal.
 
 ### Acceptance criteria
 
-- [ ] Parser tidak pernah mengeksekusi target.
-- [ ] Semua parse failure menjadi `AS-SC-900` dengan format, file, dan alasan yang stabil.
-- [ ] Critical fixture recall 100% untuk skenario deterministic yang didefinisikan.
-- [ ] High-severity false-positive rate di bawah 10% pada safe corpus.
-- [ ] Scan 10.000 file selesai di bawah lima menit pada mesin referensi 4-vCPU.
-- [ ] Archive bomb, symlink escape, path traversal, dan file lebih besar dari limit tidak merusak host.
+- [x] Parser tidak pernah mengeksekusi target.
+- [x] Semua parse failure menjadi `AS-SC-900` dengan format, file, dan alasan yang stabil.
+- [x] Critical fixture recall 100% untuk skenario deterministic yang didefinisikan.
+- [x] High-severity false-positive rate di bawah 10% pada maintained safe golden corpus.
+- [~] Reproducible gate 10.000 file/5 menit tersedia melalui `pnpm benchmark:scanner` dan lulus pada
+  environment development; release evidence dari mesin referensi 4-vCPU masih diperlukan.
+- [x] Archive bomb, path traversal, symlink escape, tar checksum/size corruption, duplicate entry, dan
+  file lebih besar dari limit telah mempunyai regression test untuk ZIP, wheel, tar, dan tar.gz.
 
 ## 2. Rule quality, fixtures, dan benchmark — P0
 
-- [~] Ada fixtures aman/rentan dan tests untuk rule paling penting, tetapi belum ada golden tests untuk
-  setiap rule.
-- [ ] Minimal satu true-positive dan dua safe negative fixture per production rule.
+- [x] Golden regression tests tersedia untuk seluruh production static rules.
+- [x] Minimal satu true-positive dan dua safe negative fixture per production rule.
 - [ ] Corpus minimal 30 extension publik dan 15 intentionally vulnerable fixtures untuk T-01–T-10.
-- [ ] Corpus multilingual, khususnya instruksi Indonesia dan Inggris.
-- [ ] Precision, recall, suppression rate, dan false-positive rate per rule.
-- [ ] Rule owner review workflow dan automated review-date warning.
-- [ ] Mutation/fuzz tests untuk parser dan malformed memory.
+- [~] Corpus multilingual, khususnya instruksi Indonesia dan Inggris. Skenario T-04, T-11, T-12,
+  T-13, dan T-14 sudah mencakup instruksi Indonesia dan Inggris; korpus 30 ekstensi publik dan 15
+  intentionally vulnerable fixture masih diperlukan.
+- [~] Fixture precision, recall, confusion matrix, dan hasil per rule tersedia; public-corpus metrics,
+  suppression rate, dan real-world false-positive rate belum tersedia.
+- [~] Rule owner, last review date, dan stale-review quality gate tersedia; approval workflow belum ada.
+- [~] Deterministic seeded mutation/fuzz tests untuk parser tersedia (`packages/parsers/src/fuzz.test.ts`)
+  dan sudah menemukan satu parser crash nyata; fuzzing untuk malformed memory record dan runtime event
+  schema belum ada.
 
 ### Cara mengimplementasikan
 
 1. Buat `fixtures/rules/<rule-id>/{positive,negative}/` dan metadata expected result dalam JSON.
 2. Buat fixture runner yang memindai seluruh corpus dan membandingkan rule ID, severity, confidence,
    normalized evidence, serta remediation.
-3. Tambahkan `benchmarks/scanner.ts` dengan fixture generator 1k/10k file dan simpan hasil per commit.
+3. [x] Tambahkan benchmark dengan fixture generator configurable hingga 10k file dan budget gate.
 4. Tambahkan job terjadwal untuk fuzzing dan benchmark; jangan menjalankan malicious fixture di host
    production.
 5. Publikasikan metrik kualitas rule di generated documentation.
 
 ## 3. CLI, reports, policy, dan distribution — P0/P1
 
-- [~] Baseline dapat dibaca, tetapi belum ada command untuk membuat, meninjau, memperbarui, atau
-  mendeteksi suppression kedaluwarsa.
-- [~] Policy mendukung kondisi dasar; belum ada nested boolean expression, project/org scope,
-  version history, simulator, atau exception approval.
+- [x] Baseline mempunyai command create/add/validate/prune, atomic persistence, duplicate detection,
+  serta active/expired status.
+- [~] Policy v2 mendukung typed predicates, nested boolean expression, scope metadata,
+  deterministic trace, dan multi-report simulator; persisted version history serta exception
+  approval belum ada.
 - [ ] Signed rulepack update command dan offline rulepack bundle.
-- [ ] Telemetry opt-in command, consent receipt, dan data preview. Default harus tetap off.
+- [x] Telemetry opt-in command, consent receipt, dan data preview (`agentshield telemetry
+  status|enable|disable|preview`). Default tetap off dan tidak ada transmisi di edisi Community.
 - [ ] npm release pipeline, changelog automation, artifact signing, checksum, SBOM, dan provenance
   attestation.
-- [ ] Shell completions, man page, upgrade/uninstall documentation.
-- [ ] Memory SARIF/AgentBOM export dan evidence bundle export.
-- [ ] GitHub Action reusable resmi serta generic CI examples untuk GitLab/Azure/Jenkins.
+- [x] Shell completions, man page, upgrade/uninstall documentation (`agentshield completion`,
+  `docs/operations/agentshield.1`, `docs/operations/install.md`).
+- [x] Memory SARIF/AgentBOM export dan evidence bundle export (`memory audit --format
+  sarif|agentbom|bundle`).
+- [x] GitHub Action reusable resmi serta generic CI examples untuk GitLab/Azure/Jenkins
+  (`.github/actions/scan` dan `docs/operations/ci-*`).
 
 ### Cara mengimplementasikan
 
-1. Tambahkan `baseline create`, `baseline add`, `baseline prune`, dan `baseline validate`. Setiap entry
+1. [x] Tambahkan `baseline create`, `baseline add`, `baseline prune`, dan `baseline validate`. Setiap entry
    wajib mempunyai owner, reason, finding fingerprint, dan expiry.
-2. Definisikan policy schema versioned dengan `all`, `any`, `not`, typed operands, dan deterministic
+2. [x] Definisikan policy schema versioned dengan `all`, `any`, `not`, typed operands, dan deterministic
    evaluation trace. Jangan memakai `eval`.
 3. Simpan policy versions immutable; publish policy baru melalui simulation terhadap historical
    reports sebelum aktivasi.
@@ -134,24 +151,26 @@ Terakhir diperbarui: 2026-08-03.
 
 ## 4. Memory adapters dan inventory — P0
 
-- [~] JSON/JSONL/Markdown/SQLite tersedia, tetapi belum memakai adapter SDK/capability declaration
-  formal.
-- [~] Checkpoint hash dihasilkan, tetapi repeated scan masih memproses semua record; incremental cache
-  belum ada.
+- [x] JSON/JSONL/Markdown/SQLite memakai kontrak adapter versioned dengan capability declaration,
+  pagination, checkpoint, connection test, dan read-only audit surface.
+- [x] Per-record incremental cache memakai adapter ID, external ID, content/record fingerprint,
+  detector version, privacy mode, serta freshness bucket; detector relasional tetap dihitung ulang.
 - [ ] Generic PostgreSQL read-only adapter.
 - [ ] Satu vector database adapter pertama; keputusan produk masih diperlukan.
-- [ ] Pagination, checkpoints per source, retry, rate limit, dan per-record failure isolation formal.
-- [ ] Source-store total reconciliation dan documented exclusions.
-- [ ] Connection credential guidance serta automated least-privilege validation.
-- [ ] Memory type classification yang evidence-backed.
+- [~] Pagination, checkpoint, dan JSONL per-record failure isolation sudah formal; retry serta rate
+  limit untuk connector eksternal belum ada.
+- [~] Source-store total reconciliation dan documented exclusions (`memory reconcile` / `POST
+  /v1/memory/reconcile`); connection credential guidance serta automated least-privilege validation
+  belum ada.
+- [x] Memory type classification yang evidence-backed (`memory classify` / `POST /v1/memory/classify`).
 
 ### Cara mengimplementasikan
 
-1. Definisikan `MemoryAdapter` dengan method `testConnection`, `capabilities`, `inventoryPage`,
+1. [x] Definisikan `MemoryAdapter` dengan method `testConnection`, `capabilities`, `inventoryPage`,
    `checkpoint`, `planMutation`, `applyMutation`, dan `restoreSnapshot`.
-2. Buat conformance suite yang wajib dilewati setiap adapter, termasuk proof bahwa audit mode tidak
+2. [x] Buat conformance suite yang wajib dilewati setiap adapter, termasuk proof bahwa audit mode tidak
    dapat memanggil write method.
-3. Simpan cache berdasarkan adapter ID, external ID, content hash, detector version, dan privacy mode.
+3. [x] Simpan cache berdasarkan adapter ID, external ID, content hash, detector version, dan privacy mode.
    Reuse assessment hanya jika semua key cocok.
 4. Gunakan role database read-only, transaction read-only, query timeout, page size, dan maximum
    record size.
@@ -173,8 +192,9 @@ Terakhir diperbarui: 2026-08-03.
 - [~] Freshness memakai umur generik; belum mempertimbangkan volatility, source modified time,
   memory type policy, atau authoritative replacement.
 - [~] PII detector masih terbatas dan belum mempunyai locale packs atau organization terms.
-- [~] Poison detector masih phrase matching; belum mendeteksi hidden Unicode, encoding, policy
-  conflict, provenance mismatch, atau indirect tool instruction secara menyeluruh.
+- [~] Poison detector kini mendeteksi hidden Unicode (`AS-ME-012`) dan instruksi tersembunyi dalam
+  encoding base64/HTML entity (`AS-ME-013`), sejajar dengan `AS-SC-026`; policy conflict, provenance
+  mismatch, dan indirect tool instruction secara menyeluruh belum tersedia.
 - [ ] Corroboration dari beberapa independent sources.
 - [ ] Optional LLM classifier dengan cited memory IDs, pinned evals, local-model option, dan label
   yang membedakan hasil model dari deterministic findings.
@@ -198,13 +218,19 @@ Terakhir diperbarui: 2026-08-03.
 
 - [~] Quarantine sidecar melindungi audit AgentShield berikutnya, tetapi belum menghentikan retrieval
   oleh framework/agent di luar AgentShield.
-- [~] Snapshot lokal tersedia, tetapi belum ada backup verification, encrypted snapshot store,
-  retention, atau snapshot garbage collection.
+- [x] State machine persisted `planned -> approved -> executed -> rolled_back` (dan `rejected`) sebagai
+  schema `remediation.json`, dipisahkan menjadi `plan`, `approve`, `execute`, `rollback`, dan `reject`.
+  Setiap tahap menyimpan actor, reason, timestamp, dan source hash.
+- [x] Idempotency key pada planning (re-planning dengan key yang sama mengembalikan plan yang ada).
+- [x] Two-person approval opsional (`requireTwoPerson` menolak approver yang sama dengan planner).
+- [x] Compare-and-swap: eksekusi membandingkan source hash saat ini dengan hash saat planning dan
+  membatalkan operasi bila berubah.
+- [~] Snapshot lokal tersedia, tetapi belum ada backup verification terenkripsi, retention, atau
+  snapshot garbage collection.
 - [ ] Connector write hooks untuk record-level quarantine/deprecation/TTL.
 - [ ] Dry-run diff yang spesifik untuk source store.
 - [ ] Immutable memory version service.
-- [ ] Atomic batch mutation, partial-failure recovery, dan idempotency key.
-- [ ] Two-person approval untuk high-impact batch.
+- [ ] Atomic batch mutation, partial-failure recovery.
 - [ ] Vector reindex dan source/index consistency verification.
 - [ ] Hard-delete-after-retention workflow; harus tetap disabled by default.
 
@@ -258,12 +284,13 @@ Terakhir diperbarui: 2026-08-03.
   remediation, runtime event, policy, decision, dan audit event.
 - [ ] Redis/BullMQ worker untuk scan, report, reindex, notifications, dan retention jobs.
 - [ ] S3-compatible artifact store untuk report/evidence bundle.
-- [ ] Missing draft endpoints: scan cancel, global components/permissions, remediation approve,
-  execute, rollback, evidence export, policy versioning, dan pagination.
-- [ ] Idempotency keys pada semua mutation/event endpoints.
-- [ ] Cursor pagination, request schema/OpenAPI, rate limiting, timeouts, cancellation, dan stable
-  error catalog.
-- [ ] Structured logging, metrics, OpenTelemetry traces, readiness/liveness, dan queue health.
+- [~] Missing draft endpoints: scan cancel, global components/permissions masih belum ada; remediation
+  approve, execute, rollback, evidence export, dan cursor pagination sudah tersedia.
+- [x] Idempotency keys pada remediation planning endpoint.
+- [x] Cursor pagination, rate limiting, stable error catalog (`/v1/errors`), dan TLS support sudah
+  tersedia; request schema/OpenAPI, timeouts, dan cancellation belum ada.
+- [~] Structured logging (Fastify logger) dan readiness/liveness (`/health` + Docker healthcheck)
+  sudah ada; metrics, OpenTelemetry traces, dan queue health belum ada.
 - [ ] Backup, point-in-time recovery, migration rollback, dan disaster-recovery drill.
 
 ### Cara mengimplementasikan
@@ -299,10 +326,11 @@ evaluasi lokal.
 - [~] Overview, scan form, findings, permission map, filtering, dan API connectivity tersedia.
 - [ ] Projects/agents/scans history dan trend data.
 - [ ] Finding assignment, comments, lifecycle, exception, dan reviewer workflow.
-- [ ] Memory inventory/health view, conflict explorer, dan poisoning review queue.
-- [ ] Quarantine plan, approval, execution, restore, dan rollback center.
-- [ ] Runtime trace graph explorer dengan evidence-gap visualization.
-- [ ] Policy editor, validator, simulator, version history, publish, dan rollback.
+- [~] Memory inventory/health view, conflict explorer, dan poisoning review queue sudah tersedia di
+  dashboard; quarantine plan center masih CLI/API only (approval/execution/restore UI belum ada).
+- [~] Runtime trace graph explorer dengan evidence-gap visualization sudah tersedia di dashboard.
+- [~] Policy validator/simulator sudah tersedia di dashboard (evaluate report vs policy); editor,
+  version history, publish, dan rollback belum ada.
 - [ ] Users, roles, API tokens, integrations, retention, usage, dan billing screens.
 - [ ] Accessible data tables, keyboard flow, responsive QA, screen-reader labels, dan WCAG 2.2 AA
   audit.
@@ -321,10 +349,11 @@ evaluasi lokal.
 
 ## 11. Deployment dan operations — P1/P2
 
-- [~] Ada API Dockerfile dan local Compose, tetapi belum ada dashboard/worker image, PostgreSQL,
+- [~] Ada API Dockerfile (non-root, read-only, healthcheck) dan local Compose, serta VPS Compose
+  dengan Caddy (auto-TLS + dashboard serving + API proxy); belum ada worker image, PostgreSQL,
   Redis, object storage, migrations, atau health-based orchestration.
-- [ ] Production Dockerfiles dengan non-root user, read-only filesystem, pinned digest, dan image
-  signing.
+- [~] Production Dockerfile dengan non-root user, read-only filesystem, dan no-new-privileges sudah
+  ada; pinned digest dan image signing belum ada.
 - [ ] Compose development stack lengkap.
 - [ ] Kubernetes manifests/Helm chart, secrets integration, network policies, pod security, resource
   limits, autoscaling, dan disruption budgets.

@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "admin": {
+      "command": "node",
+      "args": ["./server.js"]
+    }
+  },
+  "tools": [
+    {
+      "name": "delete_records",
+      "description": "Removes database rows matching a filter",
+      "inputSchema": { "type": "object", "properties": { "filter": { "type": "string" } } }
+    },
+    {
+      "name": "read_doc",
+      "description": "Reads a document from the knowledge base"
+    }
+  ]
+}

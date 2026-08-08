@@ -1,4 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Memory } from './Memory.js';
+import { RuntimeTraces } from './RuntimeTraces.js';
+import { Policies } from './Policies.js';
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 interface Finding { id: string; ruleId: string; title: string; description: string; severity: Severity; category: string; confidence: string; remediation: string; status: string; evidence: Array<{ path: string; line?: number; excerpt: string }> }
@@ -19,7 +22,7 @@ const icons: Record<string, ReactNode> = {
   check: <path d="m5 12 4 4L19 6"/>,
   arrow: <path d="m9 18 6-6-6-6"/>
 };
-function Icon({ name, size = 18 }: { name: string; size?: number }) { return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{icons[name]}</svg>; }
+export function Icon({ name, size = 18 }: { name: string; size?: number }) { return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{icons[name]}</svg>; }
 
 const nav: Array<[string, string]> = [['grid','Overview'], ['scan','Findings'], ['brain','Memory'], ['trace','Runtime traces'], ['policy','Policies']];
 const severityOrder: Severity[] = ['critical', 'high', 'medium', 'low', 'info'];
@@ -65,9 +68,9 @@ export function App() {
 
       {active === 'Overview' && <Overview report={report} counts={counts} onViewFindings={() => setActive('Findings')} />}
       {active === 'Findings' && <Findings report={report} />}
-      {active === 'Memory' && <Empty icon="brain" title="Memory intelligence is CLI-enabled" body="Run agentshield memory audit against JSON, JSONL, Markdown, or SQLite. The API endpoint /v1/memory-audits can feed this view in your integration." />}
-      {active === 'Runtime traces' && <Empty icon="trace" title="No trace selected" body="Ingest sanitized events through /v1/runtime/events, then inspect the source-to-action evidence graph by trace ID." />}
-      {active === 'Policies' && <Empty icon="policy" title="Policy-as-code is active" body="Evaluate versioned YAML policies from the CLI or POST a canonical report and policy to /v1/policies/evaluate." />}
+      {active === 'Memory' && <Memory />}
+      {active === 'Runtime traces' && <RuntimeTraces />}
+      {active === 'Policies' && <Policies />}
     </main>
   </div>;
 }
@@ -95,6 +98,6 @@ function Findings({ report }: { report: Report | null }) {
   return <section className="findings-view"><div className="filterbar"><span>Filter by severity</span>{(['all',...severityOrder] as const).map((item) => <button key={item} className={filter === item ? 'selected' : ''} onClick={() => setFilter(item)}>{item}</button>)}</div>{list.map((finding) => <article className="panel finding" key={finding.id}><div className="finding-top"><span className={`badge ${finding.severity}`}>{finding.severity}</span><code>{finding.ruleId}</code><span>{finding.category}</span><span>{finding.confidence} confidence</span></div><h2>{finding.title}</h2><p>{finding.description}</p><div className="evidence"><div><strong>{compactPath(finding.evidence[0]?.path ?? '')}{finding.evidence[0]?.line ? `:${finding.evidence[0].line}` : ''}</strong><code>{finding.evidence[0]?.excerpt}</code></div></div><details><summary>Recommended remediation</summary><p>{finding.remediation}</p></details></article>)}{!list.length && <Empty icon="check" title="No matching findings" body="No open evidence is present for this filter." />}</section>;
 }
 
-function Empty({ icon, title, body }: { icon: string; title: string; body: string }) { return <section className="empty panel"><span><Icon name={icon} size={29}/></span><p className="overline">AgentShield</p><h2>{title}</h2><p>{body}</p></section>; }
+export function Empty({ icon, title, body }: { icon: string; title: string; body: string }) { return <section className="empty panel"><span><Icon name={icon} size={29}/></span><p className="overline">AgentShield</p><h2>{title}</h2><p>{body}</p></section>; }
 function displayName(value: string) { return value.replace(/([A-Z])/g, ' $1').replace(/^./, (text) => text.toUpperCase()); }
 function compactPath(value: string) { const parts = value.replaceAll('\\','/').split('/'); return parts.length > 3 ? `…/${parts.slice(-3).join('/')}` : value; }

@@ -1,0 +1,75 @@
+.TH AGENTSHIELD 1 "2026-08-08" "AgentShield 0.1.0" "User Commands"
+.SH NAME
+agentshield \- local-first security scanner and memory auditor for AI agents
+.SH SYNOPSIS
+.B agentshield
+.I command
+.RI [ options ]
+.SH DESCRIPTION
+AgentShield inspects skills, MCP configuration, prompts, scripts, and stored memory without
+executing target code. Every finding includes deterministic evidence and remediation. Scans are
+local; nothing is uploaded in the Community edition.
+.SH COMMANDS
+.TP
+.B scan <target>
+Static scan of a file or directory. Supports \fB--format\fP terminal|json|sarif|html|agentbom,
+\fB--output\fP, \fB--policy\fP, and \fB--ci\fP.
+.TP
+.B scan-mcp <config>
+Inspect an MCP server configuration for misleading tools and wildcard scopes.
+.TP
+.B permissions <target>
+List the declared permission surface for a target.
+.TP
+.B diff <old> <new>
+Risk-delta between two canonical scan reports.
+.TP
+.B policy check <report.json> <policy.yaml>
+Evaluate a report against a policy file.
+.TP
+.B policy simulate <policy.yaml> <report.json...>
+Simulate a policy across historical reports with \fB--json\fP and \fB--fail-on-block\fP.
+.TP
+.B report <report.json> \-\-format html
+Render a self-contained HTML report.
+.TP
+.B rules list
+List static and memory rules. \fB--json\fP for machine-readable output.
+.TP
+.B explain <ruleId>
+Explain a static (\fBAS-SC-*\fP) or memory (\fBAS-ME-*\fP) rule.
+.TP
+.B baseline create|add|validate|prune
+Manage reviewed, expiring finding suppressions.
+.TP
+.B memory audit <target>
+Read-only memory audit. \fB--format\fP terminal|json|html|sarif|agentbom|bundle.
+.TP
+.B memory quarantine|restore <target> <memoryId>
+Reversibly quarantine or restore a memory record without deleting the source.
+.TP
+.B runtime ingest|trace
+Ingest sanitized runtime events and build a source-to-action evidence graph.
+.TP
+.B telemetry status|enable|disable|preview
+Manage local telemetry consent. Off by default; nothing is transmitted.
+.TP
+.B completion <bash|zsh|fish>
+Print a shell completion script.
+.SH EXIT CODES
+0 pass, 1 operational failure, 2 block/severity failure, 3 required review, 4 incomplete CI analysis.
+.SH FILES
+.TP
+.I .agentshield/
+Local data directory for reports, memory cache, quarantine snapshots, runtime events, and telemetry
+consent. Created on demand and never uploaded.
+.SH EXAMPLES
+.PP
+agentshield scan ./my-skill --format sarif --output agentshield.sarif --ci
+.PP
+agentshield memory audit memories.jsonl --format bundle --output bundle.json
+.PP
+agentshield telemetry preview
+.SH SEE ALSO
+.BR docs/operations/install.md ,
+.BR AGENTSHIELD_DEVELOPMENT_PLAN.md

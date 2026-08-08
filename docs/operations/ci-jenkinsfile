@@ -1,0 +1,24 @@
+// Jenkins declarative pipeline example for AgentShield.
+// Fails the build on a block/severity outcome (exit code 2) and archives the SARIF report.
+pipeline {
+  agent { label 'linux' }
+  tools { nodejs 'Node-22' }
+  stages {
+    stage('AgentShield') {
+      steps {
+        sh 'npm install -g agentshield@latest'
+        sh 'agentshield scan . --format sarif --output agentshield.sarif --ci --policy policies/default.yaml'
+      }
+    }
+    stage('Memory audit') {
+      steps {
+        sh 'agentshield memory audit ./memory/memories.jsonl --format bundle --output agentshield-memory-bundle.json'
+      }
+    }
+  }
+  post {
+    always {
+      archiveArtifacts artifacts: 'agentshield.sarif,agentshield-memory-bundle.json', allowEmptyArchive: true
+    }
+  }
+}

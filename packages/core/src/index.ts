@@ -42,6 +42,28 @@ export const permissionSchema = z.object({
 });
 export type Permission = z.infer<typeof permissionSchema>;
 
+/**
+ * Supply-chain provenance evidence for a component.
+ *
+ * Every field is optional because provenance is discovered opportunistically from manifests and
+ * lockfiles. An absent field means "not observed", never "verified absent".
+ */
+export const componentProvenanceSchema = z.object({
+  packageName: z.string().optional(),
+  declaredVersion: z.string().optional(),
+  resolvedVersion: z.string().optional(),
+  repositoryUrl: z.string().optional(),
+  homepageUrl: z.string().optional(),
+  registryUrl: z.string().optional(),
+  integrity: z.string().optional(),
+  lockfile: z.string().optional(),
+  manifest: z.string().optional(),
+  pinned: z.boolean().optional(),
+  unpinnedDependencies: z.array(z.string()).default([]),
+  remoteDependencies: z.array(z.string()).default([])
+});
+export type ComponentProvenance = z.infer<typeof componentProvenanceSchema>;
+
 export const componentSchema = z.object({
   id: z.string(),
   type: z.enum(['skill', 'mcp-server', 'script', 'config', 'memory-store', 'unknown']),
@@ -49,7 +71,8 @@ export const componentSchema = z.object({
   version: z.string().optional(),
   hash: z.string(),
   source: z.string(),
-  signatureStatus: z.enum(['verified', 'unsigned', 'invalid', 'unknown']).default('unknown')
+  signatureStatus: z.enum(['verified', 'unsigned', 'invalid', 'unknown']).default('unknown'),
+  provenance: componentProvenanceSchema.optional()
 });
 export type Component = z.infer<typeof componentSchema>;
 
@@ -141,6 +164,13 @@ export const memoryAuditReportSchema = z.object({
   assessments: z.array(trustAssessmentSchema),
   checkpoint: z.string(),
   privacyMode: z.enum(['none', 'secrets', 'pii-secrets', 'metadata-only']),
+  cache: z.object({
+    enabled: z.boolean(),
+    hits: z.number().int().nonnegative(),
+    misses: z.number().int().nonnegative(),
+    entries: z.number().int().nonnegative(),
+    detectorVersion: z.string()
+  }).optional(),
   errors: z.array(z.string()).default([])
 });
 export type MemoryAuditReport = z.infer<typeof memoryAuditReportSchema>;

@@ -1,0 +1,32 @@
+version: 2
+id: strict-local-security
+scope:
+  project: example-project
+defaults:
+  on_critical: block
+  on_high: require_review
+rules:
+  - id: block-secret-network-flow
+    when:
+      all:
+        - field: finding.ruleId
+          operator: eq
+          value: AS-SC-001
+        - field: permission.resource
+          operator: eq
+          value: network
+        - not:
+            field: permission.scope
+            operator: eq
+            value: trusted.example.com
+    action: block
+  - id: review-process-or-broad-scope
+    when:
+      any:
+        - field: permission.name
+          operator: eq
+          value: process.execute
+        - field: permission.scope
+          operator: eq
+          value: broad
+    action: require_review

@@ -122,9 +122,17 @@ export interface RuntimePolicy {
 
 export function evaluateRuntimePolicy(event: RuntimeEvent, policies: RuntimePolicy[]): { action: PolicyAction; policyIds: string[]; reason: string } {
   const rank: Record<PolicyAction, number> = { allow: 0, warn: 1, require_review: 2, quarantine: 3, block: 4 };
+  const isTool = event.type.startsWith('tool.');
+  const isMemory = event.type.startsWith('memory.');
   const matched = policies.filter((policy) => {
-    if (policy.toolPattern && event.type.startsWith('tool.') && !new RegExp(policy.toolPattern, 'i').test(event.target ?? '')) return false;
-    if (policy.memorySourcePattern && event.type.startsWith('memory.') && !new RegExp(policy.memorySourcePattern, 'i').test(String(event.metadata.source ?? ''))) return false;
+    if (policy.toolPattern) {
+      if (!isTool) return false;
+      if (!new RegExp(policy.toolPattern, 'i').test(event.target ?? '')) return false;
+    }
+    if (policy.memorySourcePattern) {
+      if (!isMemory) return false;
+      if (!new RegExp(policy.memorySourcePattern, 'i').test(String(event.metadata.source ?? ''))) return false;
+    }
     if (policy.sensitivity && event.metadata.sensitivity !== policy.sensitivity) return false;
     return Boolean(policy.toolPattern || policy.memorySourcePattern || policy.sensitivity);
   });
@@ -133,3 +141,8 @@ export function evaluateRuntimePolicy(event: RuntimeEvent, policies: RuntimePoli
 }
 
 export function createTraceId(): string { return createId('trace'); }
+
+export {
+  AgentShieldGate,
+  type GateConfig, type GateContext, type ToolRequest, type MemoryWriteRequest, type GateResult
+} from './sdk.js';

@@ -1,0 +1,35 @@
+# Example consumer workflow that reuses the AgentShield scan action.
+# Place this in your repository at .github/workflows/agentshield.yml and adjust the target.
+name: agentshield
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+  security-events: write
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: AgentShield scan
+        uses: agentshield/agentshield/.github/actions/scan@main
+        with:
+          target: .
+          policy: policies/default.yaml
+          sarif-path: agentshield.sarif
+      # Optional: audit an agent memory store and export an evidence bundle.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Memory audit
+        run: |
+          npm install -g agentshield@latest
+          agentshield memory audit ./memory/memories.jsonl --format bundle --output agentshield-memory-bundle.json
+      - name: Upload memory bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentshield-memory-bundle
+          path: agentshield-memory-bundle.json

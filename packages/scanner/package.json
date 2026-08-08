@@ -5,7 +5,10 @@
   "exports": "./src/index.ts",
   "dependencies": {
     "@agentshield/core": "workspace:*",
+    "@agentshield/parsers": "workspace:*",
+    "fflate": "^0.8.2",
     "ignore": "^7.0.5",
+    "smol-toml": "^1.4.2",
     "yaml": "^2.8.0"
   }
 }

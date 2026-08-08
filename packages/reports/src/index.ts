@@ -1,4 +1,4 @@
-import type { Finding, MemoryAuditReport, ScanReport, Severity } from '@agentshield/core';
+import { VERSION, type Finding, type MemoryAuditReport, type ScanReport, type Severity } from '@agentshield/core';
 
 function escapeHtml(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#039;');
@@ -75,4 +75,83 @@ export function renderMemoryHtml(report: MemoryAuditReport): string {
   const values = { freshness: average('freshness'), authority: average('authority'), integrity: average('integrity'), corroboration: average('corroboration'), sensitivity: average('sensitivity'), poisonRisk: average('poisonRisk') };
   const dimensions = Object.entries(values).map(([name, value]) => `<div class="card metric"><span class="muted">${escapeHtml(name)}</span><strong>${value}</strong><div class="bar"><i style="width:${value}%"></i></div></div>`).join('');
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AgentShield memory audit</title><style>${style}</style></head><body><main><header><div><div class="eyebrow">AgentShield / memory audit</div><h1>Memory health report</h1><div class="muted">${escapeHtml(report.target)} · ${escapeHtml(report.completedAt)}</div></div><div class="score">${report.inventory.audited}<small> records audited</small></div></header><div class="summary"><span class="pill">${report.inventory.total} total</span><span class="pill">${report.inventory.quarantined} quarantined</span><span class="pill">${report.findings.length} findings</span><span class="pill">${escapeHtml(report.privacyMode)}</span></div><section class="grid">${dimensions}</section><section><div class="eyebrow">Findings / ${report.findings.length}</div>${report.findings.map(findingHtml).join('') || '<div class="card"><h3>No findings</h3></div>'}</section><footer>Generated locally by AgentShield · Evidence is redacted according to privacy mode ${escapeHtml(report.privacyMode)}.</footer></main></body></html>`;
+}
+
+/**
+ * SARIF 2.1 representation of a memory audit. Memory evidence carries a source URI rather than a
+ * source file line/column, so each result location reports the record source URI and a redacted
+ * excerpt. Suppressed findings are omitted, matching the static scan renderer.
+ */
+export function renderMemorySarif(report: MemoryAuditReport): object {
+  const rules = [...new Map(report.findings.map((finding) => [finding.ruleId, finding])).values()];
+  return {
+    $schema: 'https://json.schemastore.org/sarif-2.1.0.json', version: '2.1.0', runs: [{
+      tool: { driver: { name: 'AgentShield Memory Auditor', version: VERSION, informationUri: 'https://github.com/agentshield/agentshield', rules: rules.map((item) => ({
+        id: item.ruleId, name: item.title.replaceAll(/[^A-Za-z0-9]+/g, ''), shortDescription: { text: item.title },
+        fullDescription: { text: item.description }, help: { text: item.remediation }, properties: { category: item.category, severity: item.severity }
+      })) } },
+      results: report.findings.filter((item) => item.status !== 'suppressed').map((item) => ({
+        ruleId: item.ruleId, level: sarifLevel(item.severity), message: { text: `${item.title}. ${item.description}` },
+        locations: item.evidence.map((evidence) => ({ physicalLocation: {
+          artifactLocation: { uri: evidence.path }, region: { startLine: evidence.line ?? 1, snippet: { text: evidence.excerpt } }
+        } })),
+        fingerprints: { agentshieldFinding: item.id }, properties: { severity: item.severity, confidence: item.confidence, remediation: item.remediation, memoryId: item.metadata.memoryId }
+      }))
+    }]
+  };
+}
+
+/**
+ * A self-contained, shareable evidence bundle for a memory audit. It carries the audit metadata,
+ * inventory, trust assessments, and redacted findings with a manifest so a reviewer can inspect the
+ * evidence without access to the source store. Raw memory content is never included; excerpts are
+ * redacted according to the report privacy mode.
+ */
+export function renderMemoryEvidenceBundle(report: MemoryAuditReport): object {
+  return {
+    bundleSchemaVersion: '1.0.0',
+    generatedAt: new Date().toISOString(),
+    tool: { name: 'AgentShield', version: VERSION, component: 'Memory Auditor' },
+    audit: {
+      auditId: report.auditId, target: report.target, adapter: report.adapter,
+      startedAt: report.startedAt, completedAt: report.completedAt, status: report.status,
+      privacyMode: report.privacyMode, checkpoint: report.checkpoint
+    },
+    inventory: report.inventory,
+    assessments: report.assessments,
+    findings: report.findings.map((finding) => ({
+      id: finding.id, ruleId: finding.ruleId, title: finding.title, description: finding.description,
+      severity: finding.severity, confidence: finding.confidence, category: finding.category, status: finding.status,
+      remediation: finding.remediation, memoryId: finding.metadata.memoryId, externalId: finding.metadata.externalId,
+      evidence: finding.evidence.map((evidence) => ({ path: evidence.path, excerpt: evidence.excerpt, redacted: evidence.redacted })),
+      metadata: finding.metadata
+    })),
+    notes: 'Raw memory content is never included. Excerpts are redacted according to the privacy mode shown above.'
+  };
+}
+
+/**
+ * CycloneDX-compatible AgentBOM for a memory audit. The audited memory store is modeled as a single
+ * component and each non-suppressed finding becomes a vulnerability affecting it, carrying the
+ * memory record id so consumers can correlate back to the source store.
+ */
+export function renderMemoryAgentBom(report: MemoryAuditReport): object {
+  return {
+    bomFormat: 'CycloneDX', specVersion: '1.6', serialNumber: `urn:uuid:${report.auditId.replace(/^audit_/, '')}`, version: 1,
+    metadata: { timestamp: report.completedAt, tools: { components: [{ type: 'application', name: 'AgentShield Memory Auditor', version: VERSION }] },
+      properties: [
+        { name: 'agentshield:target', value: report.target }, { name: 'agentshield:adapter', value: report.adapter },
+        { name: 'agentshield:privacy-mode', value: report.privacyMode },
+        { name: 'agentshield:inventory:total', value: String(report.inventory.total) },
+        { name: 'agentshield:inventory:audited', value: String(report.inventory.audited) },
+        { name: 'agentshield:inventory:quarantined', value: String(report.inventory.quarantined) }
+      ] },
+    components: [{ type: 'application', 'bom-ref': report.auditId, name: 'memory-store', properties: [{ name: 'agentshield:adapter', value: report.adapter }, { name: 'agentshield:target', value: report.target }] }],
+    vulnerabilities: report.findings.filter((item) => item.status !== 'suppressed').map((finding) => ({
+      id: finding.id, source: { name: 'AgentShield Memory Rulepack', url: `urn:agentshield:rule:${finding.ruleId}` },
+      ratings: [{ severity: finding.severity, score: severityScore(finding.severity), method: 'other' }],
+      description: finding.description, recommendation: finding.remediation, affects: [{ ref: report.auditId }],
+      properties: [{ name: 'agentshield:memoryId', value: String(finding.metadata.memoryId ?? 'unknown') }]
+    }))
+  };
 }

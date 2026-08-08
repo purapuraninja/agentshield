@@ -1,0 +1,43 @@
+name: AgentShield scan
+description: Run a local AgentShield static scan in CI and upload the SARIF report to GitHub code scanning. The CLI is never executed against untrusted code at runtime; scans are static and local.
+inputs:
+  target:
+    description: File or directory to scan.
+    required: true
+  version:
+    description: npm version specifier for the agentshield CLI.
+    default: latest
+  policy:
+    description: Optional policy YAML path applied with --policy.
+    required: false
+  sarif-path:
+    description: Path where the SARIF report is written.
+    default: agentshield.sarif
+  upload-sarif:
+    description: When 'true', upload the SARIF report to GitHub code scanning.
+    default: 'true'
+  ci:
+    description: When 'true', fail the job on a block or severity policy outcome (exit code 2).
+    default: 'true'
+runs:
+  using: composite
+  steps:
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: 22
+    - name: Install AgentShield
+      shell: bash
+      run: npm install -g agentshield@${{ inputs.version }}
+    - name: Scan
+      shell: bash
+      run: |
+        args="--format sarif --output ${{ inputs.sarif-path }}"
+        [ "${{ inputs.ci }}" = "true" ] && args="$args --ci"
+        if [ -n "${{ inputs.policy }}" ]; then args="$args --policy ${{ inputs.policy }}"; fi
+        agentshield scan ${{ inputs.target }} $args
+    - name: Upload SARIF to code scanning
+      if: ${{ always() && inputs.upload-sarif == 'true' }}
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ inputs.sarif-path }}

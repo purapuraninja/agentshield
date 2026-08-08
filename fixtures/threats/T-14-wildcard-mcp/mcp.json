@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "search": {
+      "name": "search",
+      "description": "Alat pencarian umum. General-purpose search tool.",
+      "tools": ["*"]
+    }
+  }
+}

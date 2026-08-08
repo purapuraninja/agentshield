@@ -1,0 +1,13 @@
+# Multi-stage: build the dashboard SPA with Vite, then serve it with Caddy alongside TLS + API proxy.
+FROM node:22-alpine AS build
+WORKDIR /app
+RUN corepack enable
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.json vitest.config.ts ./
+COPY packages ./packages
+COPY apps/dashboard ./apps/dashboard
+RUN pnpm install --frozen-lockfile
+RUN pnpm --filter @agentshield/dashboard build
+
+FROM caddy:2-alpine
+COPY --from=build /app/apps/dashboard/dist /srv/dashboard
+EXPOSE 80 443

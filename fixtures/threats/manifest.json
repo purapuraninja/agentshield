@@ -1,0 +1,113 @@
+{
+  "version": 1,
+  "language": "Indonesian and English",
+  "scenarios": [
+    {
+      "id": "T-01",
+      "title": "Skill reads environment variables and sends them externally",
+      "kind": "scanner",
+      "target": "T-01-secret-exfiltration/skill.ts",
+      "expect": ["AS-SC-001"]
+    },
+    {
+      "id": "T-02",
+      "title": "MCP tool description hides a destructive side effect",
+      "kind": "scanner",
+      "target": "T-02-misleading-mcp/mcp.json",
+      "expect": ["AS-SC-024"]
+    },
+    {
+      "id": "T-03",
+      "title": "Shell script executes downloaded code",
+      "kind": "scanner",
+      "target": "T-03-download-execute/install.sh",
+      "expect": ["AS-SC-002"]
+    },
+    {
+      "id": "T-04",
+      "title": "Untrusted document stores persistent instructions in memory (Indonesian)",
+      "kind": "memory",
+      "target": "T-04-poisoned-memory/memories.jsonl",
+      "expect": ["AS-ME-010"]
+    },
+    {
+      "id": "T-04s",
+      "title": "Untrusted document carries persistent instructions (Indonesian, scanner)",
+      "kind": "scanner",
+      "target": "T-04-poisoned-memory/SKILL.md",
+      "expect": ["AS-SC-017"]
+    },
+    {
+      "id": "T-05",
+      "title": "Old memory overrides current policy",
+      "kind": "memory",
+      "target": "T-05-stale-conflict/memories.jsonl",
+      "expect": ["AS-ME-003", "AS-ME-004"]
+    },
+    {
+      "id": "T-06",
+      "title": "Memory record is modified outside the agent",
+      "kind": "memory",
+      "target": "T-06-integrity-tamper/memories.jsonl",
+      "expect": ["AS-ME-011"]
+    },
+    {
+      "id": "T-07",
+      "title": "Poisoned memory triggers a sensitive tool call later",
+      "kind": "runtime",
+      "target": "T-07-poisoned-triggers-tool/events.jsonl",
+      "expect": ["block"]
+    },
+    {
+      "id": "T-08",
+      "title": "Reviewer deletes evidence while cleaning memory",
+      "kind": "quarantine",
+      "target": "T-08-evidence-preservation/memories.jsonl",
+      "expect": ["quarantine-entry"]
+    },
+    {
+      "id": "T-09",
+      "title": "Scanner plugin itself becomes malicious",
+      "kind": "scanner",
+      "target": "T-09-malicious-plugin/UNIMPLEMENTED.md",
+      "expect": [],
+      "coverage": "gap",
+      "reason": "Signed rulepack/plugin verification and sandboxed rule execution are not yet implemented; no test can prove this control."
+    },
+    {
+      "id": "T-10",
+      "title": "Cloud dashboard receives sensitive raw memory",
+      "kind": "memory-privacy",
+      "target": "T-10-redaction/memories.jsonl",
+      "expect": ["AS-ME-008", "redacted"]
+    },
+    {
+      "id": "T-11",
+      "title": "Hidden Unicode conceals an instruction inside a memory record (Indonesian and English)",
+      "kind": "memory",
+      "target": "T-11-hidden-unicode-memory/memories.jsonl",
+      "expect": ["AS-ME-012"]
+    },
+    {
+      "id": "T-12",
+      "title": "Encoded payload hides an instruction inside a memory record (Indonesian and English)",
+      "kind": "memory",
+      "target": "T-12-encoded-memory/memories.jsonl",
+      "expect": ["AS-ME-013"]
+    },
+    {
+      "id": "T-13",
+      "title": "Hidden HTML instruction concealed in a reviewed document (Indonesian and English)",
+      "kind": "scanner",
+      "target": "T-13-hidden-instruction/SKILL.md",
+      "expect": ["AS-SC-016"]
+    },
+    {
+      "id": "T-14",
+      "title": "Wildcard MCP tool scope grants unbounded access (Indonesian and English)",
+      "kind": "scanner",
+      "target": "T-14-wildcard-mcp/mcp.json",
+      "expect": ["AS-SC-025"]
+    }
+  ]
+}

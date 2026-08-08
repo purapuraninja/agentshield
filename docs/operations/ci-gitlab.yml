@@ -1,0 +1,18 @@
+# GitLab CI example for AgentShield. Scans the repository and fails the pipeline on a block outcome.
+# Requires Node 22+ on the runner (use a node image or install it).
+agentshield:scan:
+  stage: test
+  image: node:22
+  script:
+    - npm install -g agentshield@latest
+    - agentshield scan . --format sarif --output agentshield.sarif --ci --policy policies/default.yaml
+  after_script:
+    - agentshield memory audit ./memory/memories.jsonl --format bundle --output agentshield-memory-bundle.json || true
+  artifacts:
+    when: always
+    paths:
+      - agentshield.sarif
+      - agentshield-memory-bundle.json
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

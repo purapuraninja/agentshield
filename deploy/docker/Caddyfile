@@ -1,0 +1,31 @@
+# AgentShield Caddyfile for VPS deployment.
+# Replace {$AGENTSHIELD_DOMAIN} with your domain (set in .env or compose environment).
+# Caddy obtains TLS certificates automatically from Let's Encrypt.
+#
+# Dashboard static files are served at / and the API is proxied at /v1/* and /health.
+
+{$AGENTSHIELD_DOMAIN} {
+	encode gzip zstd
+
+	# API reverse proxy
+	handle /v1/* {
+		reverse_proxy api:4141
+	}
+	handle /health {
+		reverse_proxy api:4141
+	}
+
+	# Dashboard static files
+	handle {
+		root * /srv/dashboard
+		try_files {path} /index.html
+		file_server
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+	}
+}

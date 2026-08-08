@@ -10,17 +10,23 @@
   },
   "scripts": {
     "build": "corepack pnpm --filter @agentshield/cli build && corepack pnpm --filter @agentshield/api build && corepack pnpm --filter @agentshield/dashboard build",
+    "benchmark:scanner": "tsx scripts/benchmark-scanner.ts",
     "dev": "corepack pnpm --filter @agentshield/cli dev",
     "dev:api": "corepack pnpm --filter @agentshield/api dev",
     "dev:dashboard": "corepack pnpm --filter @agentshield/dashboard dev",
     "test": "vitest run",
     "test:watch": "vitest",
+    "quality:rules": "tsx scripts/rule-quality.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "check": "corepack pnpm lint && corepack pnpm typecheck && corepack pnpm test && corepack pnpm build && node packages/cli/dist/cli.cjs --version"
+    "check": "corepack pnpm lint && corepack pnpm typecheck && corepack pnpm test && corepack pnpm quality:rules && corepack pnpm build && node packages/cli/dist/cli.cjs --version"
   },
   "devDependencies": {
+    "@agentshield/core": "workspace:*",
+    "@agentshield/memory": "workspace:*",
+    "@agentshield/runtime": "workspace:*",
+    "@agentshield/scanner": "workspace:*",
     "@eslint/js": "^9.32.0",
     "@types/node": "^24.1.0",
     "@types/react": "^19.1.9",

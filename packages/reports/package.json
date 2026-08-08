@@ -7,6 +7,7 @@
     "@agentshield/core": "workspace:*"
   },
   "devDependencies": {
+    "@agentshield/memory": "workspace:*",
     "@agentshield/scanner": "workspace:*"
   }
 }

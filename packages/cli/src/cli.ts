@@ -6,14 +6,21 @@ import {
   type MemoryAuditReport, type ScanReport, type Severity
 } from '@agentshield/core';
 import {
-  diffReports, evaluatePolicy, getRule, loadBaseline, loadPolicy, scanTarget, staticRules
+  addBaselineSuppressions, createBaseline, diffReports, evaluatePolicy, getRule, loadBaseline,
+  loadPolicy, pruneExpiredSuppressions, saveBaseline, scanTarget, simulatePolicy, staticRules,
+  validateBaseline
 } from '@agentshield/scanner';
-import { renderAgentBom, renderHtml, renderMemoryHtml, renderSarif } from '@agentshield/reports';
-import { auditMemory, listQuarantine, quarantineMemory, restoreMemory, type AuditOptions } from '@agentshield/memory';
+import { renderAgentBom, renderHtml, renderMemoryAgentBom, renderMemoryEvidenceBundle, renderMemoryHtml, renderMemorySarif, renderSarif } from '@agentshield/reports';
+import { auditMemory, classifyMemoryTypes, getMemoryRule, listQuarantine, memoryRules, quarantineMemory, reconcileMemoryInventory, restoreMemory, type AuditOptions,
+  planRemediation, approveRemediation, executeRemediation, rollbackRemediation, rejectRemediation, listRemediationPlans, getRemediationPlan } from '@agentshield/memory';
 import { EventStore, buildEvidenceGraph, createRuntimeEvent } from '@agentshield/runtime';
+import {
+  DEFAULT_CONSENT_PATH, appendConsentEvent, buildTelemetryDataPreview, consentState, readConsent
+} from './telemetry.js';
+import { SUPPORTED_SHELLS, completionScript, isSupportedShell } from './completions.js';
 
 type ScanFormat = 'terminal' | 'json' | 'sarif' | 'html' | 'agentbom';
-type MemoryFormat = 'terminal' | 'json' | 'html';
+type MemoryFormat = 'terminal' | 'json' | 'html' | 'sarif' | 'agentbom' | 'bundle';
 
 const program = new Command();
 program.name('agentshield').description('Local-first security and memory hygiene for AI agents').version(VERSION);
@@ -47,7 +54,9 @@ function memorySummary(report: MemoryAuditReport): string {
   const lines = [
     '', 'AgentShield memory audit', '────────────────────────────────────────────────────────',
     `Target       ${report.target}`, `Adapter      ${report.adapter}`, `Records      ${report.inventory.audited}/${report.inventory.total}`,
-    `Quarantined  ${report.inventory.quarantined}`, `Privacy      ${report.privacyMode}`, `Findings     ${report.findings.length}`, ''
+    `Quarantined  ${report.inventory.quarantined}`, `Privacy      ${report.privacyMode}`,
+    `Cache        ${report.cache?.enabled ? `${report.cache.hits} hit(s), ${report.cache.misses} miss(es)` : 'disabled'}`,
+    `Findings     ${report.findings.length}`, ''
   ];
   for (const finding of report.findings) {
     lines.push(`${severityColor(finding.severity).padEnd(process.stdout.isTTY ? 18 : 10)} ${finding.ruleId}  ${finding.title}`);
@@ -147,6 +156,19 @@ policy.command('check <report> <policy>').description('Evaluate a JSON scan repo
     if (decision.action === 'block') process.exitCode = 2;
     else if (decision.action === 'require_review') process.exitCode = 3;
   });
+policy.command('simulate <policy> <reports...>').description('Evaluate a policy against multiple historical JSON reports')
+  .option('--json', 'JSON output').option('--fail-on-block', 'exit 2 if any simulated report is blocked')
+  .action(async (policyPath, reportPaths, options) => {
+    const reports = await Promise.all((reportPaths as string[]).map(readScanReport));
+    const simulation = simulatePolicy(reports, await loadPolicy(policyPath));
+    await emit(options.json ? safeJson(simulation) : [
+      `Policy: ${simulation.policyId} (schema v${simulation.policyVersion})`,
+      `Reports: ${simulation.reports}`,
+      `allow=${simulation.distribution.allow} warn=${simulation.distribution.warn} require_review=${simulation.distribution.require_review} quarantine=${simulation.distribution.quarantine} block=${simulation.distribution.block}`,
+      ...simulation.results.map((result) => `${result.decision.action.padEnd(14)} ${result.scanId}  ${result.target}`)
+    ].join('\n'));
+    if (options.failOnBlock && simulation.distribution.block) process.exitCode = 2;
+  });
 
 program.command('report <input>').description('Convert a canonical JSON report').requiredOption('-f, --format <format>', 'html, sarif, or agentbom').option('-o, --output <path>')
   .action(async (input, options) => {
@@ -159,23 +181,104 @@ program.command('report <input>').description('Convert a canonical JSON report')
   });
 
 const rules = program.command('rules').description('Inspect the deterministic rulepack');
+const ruleCatalog = [
+  ...staticRules.map((rule) => ({
+    id: rule.id, title: rule.title, description: rule.description, severity: rule.severity, confidence: rule.confidence,
+    category: rule.category, remediation: rule.remediation, owner: rule.owner, reviewDate: rule.reviewDate,
+    limitations: rule.limitations, kind: 'static' as const
+  })),
+  ...memoryRules.map((rule) => ({ ...rule, kind: 'memory' as const }))
+];
 rules.command('list').option('--json', 'JSON output').action(async (options) => {
-  await emit(options.json ? safeJson(staticRules) : staticRules.map((rule) => `${rule.id}  ${rule.severity.toUpperCase().padEnd(8)} ${rule.title}`).join('\n'));
+  await emit(options.json ? safeJson(ruleCatalog) : ruleCatalog.map((rule) => `${rule.id}  ${rule.severity.toUpperCase().padEnd(8)} ${rule.title}`).join('\n'));
 });
-program.command('explain <ruleId>').description('Explain a static rule').action(async (ruleId) => {
-  const rule = getRule(ruleId); if (!rule) throw new Error(`Unknown rule: ${ruleId}`);
+program.command('explain <ruleId>').description('Explain a static or memory rule').action(async (ruleId) => {
+  const rule = getRule(ruleId) ?? getMemoryRule(ruleId); if (!rule) throw new Error(`Unknown rule: ${ruleId}`);
   await emit(`${rule.id} — ${rule.title}\nSeverity: ${rule.severity}\nConfidence: ${rule.confidence}\n\n${rule.description}\n\nRemediation: ${rule.remediation}\n\nLimitations: ${rule.limitations}\nOwner: ${rule.owner}\nReview date: ${rule.reviewDate}`);
 });
 
+const baselines = program.command('baseline').description('Manage reviewed, expiring finding suppressions');
+baselines.command('create <report>').description('Create a baseline from open findings in a canonical scan report')
+  .requiredOption('--owner <name>').requiredOption('--reason <text>').requiredOption('-o, --output <path>')
+  .option('--expires-in-days <days>', 'expiry between 1 and 365 days', '30')
+  .option('--minimum-severity <severity>', 'include findings at or above this severity')
+  .option('--finding <fingerprints...>', 'include only exact finding fingerprints')
+  .action(async (reportPath, options) => {
+    const report = await readScanReport(reportPath);
+    const baseline = createBaseline(report, {
+      owner: options.owner, reason: options.reason, expiresInDays: baselineDays(options.expiresInDays),
+      fingerprints: options.finding, minimumSeverity: baselineSeverity(options.minimumSeverity)
+    });
+    await saveBaseline(options.output, baseline);
+    await emit(`Created ${baseline.suppressions.length} suppression(s) in ${resolve(options.output)}`);
+  });
+baselines.command('add <baseline> <report>').description('Add selected report findings to an existing baseline')
+  .requiredOption('--owner <name>').requiredOption('--reason <text>').requiredOption('--finding <fingerprints...>')
+  .option('-o, --output <path>', 'output path; defaults to replacing the input atomically')
+  .option('--expires-in-days <days>', 'expiry between 1 and 365 days', '30')
+  .action(async (baselinePath, reportPath, options) => {
+    const current = await loadBaseline(baselinePath);
+    const updated = addBaselineSuppressions(current, await readScanReport(reportPath), {
+      owner: options.owner, reason: options.reason, expiresInDays: baselineDays(options.expiresInDays), fingerprints: options.finding
+    });
+    const output = options.output ?? baselinePath;
+    await saveBaseline(output, updated);
+    await emit(`Added ${updated.suppressions.length - current.suppressions.length} suppression(s); total ${updated.suppressions.length} in ${resolve(output)}`);
+  });
+baselines.command('validate <baseline>').description('Validate ownership, reasons, fingerprints, duplicates, and expiry').option('--json', 'JSON output')
+  .action(async (baselinePath, options) => {
+    const value = JSON.parse(await readFile(baselinePath, 'utf8')) as unknown;
+    const validation = validateBaseline(value);
+    await emit(options.json ? safeJson(validation) : [
+      `Valid: ${validation.valid ? 'yes' : 'no'}`, `Active: ${validation.active}`, `Expired: ${validation.expired}`,
+      ...(validation.invalid.length ? ['Issues:', ...validation.invalid.map((issue) => `- ${issue}`)] : [])
+    ].join('\n'));
+    if (!validation.valid) process.exitCode = 4;
+    else if (validation.expired) process.exitCode = 3;
+  });
+baselines.command('prune <baseline>').description('Remove expired suppressions while preserving active review records')
+  .option('-o, --output <path>', 'output path; defaults to replacing the input atomically')
+  .action(async (baselinePath, options) => {
+    const current = await loadBaseline(baselinePath);
+    const result = pruneExpiredSuppressions(current);
+    const output = options.output ?? baselinePath;
+    await saveBaseline(output, result.baseline);
+    await emit(`Removed ${result.removed.length} expired suppression(s); ${result.baseline.suppressions.length} active in ${resolve(output)}`);
+  });
+
+async function readScanReport(path: string): Promise<ScanReport> {
+  return scanReportSchema.parse(JSON.parse(await readFile(path, 'utf8')));
+}
+
+function baselineDays(value: string): number {
+  const days = Number(value);
+  if (!Number.isInteger(days) || days < 1 || days > 365) throw new Error('--expires-in-days must be an integer between 1 and 365');
+  return days;
+}
+
+function baselineSeverity(value?: string): Severity | undefined {
+  if (!value) return;
+  if (!(value in severityRank)) throw new Error('--minimum-severity must be info, low, medium, high, or critical');
+  return value as Severity;
+}
+
 const memory = program.command('memory').description('Audit and safely remediate agent memory');
 memory.command('audit <target>').description('Read-only memory audit')
-  .option('-f, --format <format>', 'terminal, json, or html', 'terminal').option('-o, --output <path>')
+  .option('-f, --format <format>', 'terminal, json, html, sarif, agentbom, or bundle', 'terminal').option('-o, --output <path>')
   .option('--privacy <mode>', 'none, secrets, pii-secrets, or metadata-only', 'pii-secrets')
+  .option('--no-cache', 'disable the local incremental assessment cache')
+  .option('--page-size <count>', 'inventory records requested per adapter page', '500')
   .option('--table <name>').option('--id-column <name>').option('--content-column <name>').option('--created-at-column <name>').option('--source-column <name>')
   .action(async (target, options) => {
     const adapterOptions = memoryOptions(options); const report = await auditMemory(target, adapterOptions);
     const format = options.format as MemoryFormat;
-    await emit(format === 'json' ? safeJson(report) : format === 'html' ? renderMemoryHtml(report) : memorySummary(report), options.output);
+    const output = format === 'json' ? safeJson(report)
+      : format === 'html' ? renderMemoryHtml(report)
+      : format === 'sarif' ? safeJson(renderMemorySarif(report))
+      : format === 'agentbom' ? safeJson(renderMemoryAgentBom(report))
+      : format === 'bundle' ? safeJson(renderMemoryEvidenceBundle(report))
+      : memorySummary(report);
+    await emit(output, options.output);
   });
 memory.command('quarantine <target> <memoryId>').description('Quarantine a record locally without deleting its source')
   .requiredOption('--actor <name>').requiredOption('--reason <text>')
@@ -185,8 +288,35 @@ memory.command('restore <target> <memoryId>').description('Restore a quarantined
   .action(async (target, memoryId, options) => emit(safeJson(await restoreMemory(target, memoryId, options.actor, options.reason))));
 memory.command('quarantine-list <target>').description('List local quarantine metadata (snapshots omitted)').action(async (target) => emit(safeJson(await listQuarantine(target))));
 
-function memoryOptions(options: Record<string, string | undefined>): AuditOptions {
-  return { privacyMode: options.privacy as AuditOptions['privacyMode'], table: options.table, idColumn: options.idColumn, contentColumn: options.contentColumn, createdAtColumn: options.createdAtColumn, sourceColumn: options.sourceColumn };
+const remediation = program.command('remediation').description('Plan, approve, execute, and roll back reversible memory remediation');
+remediation.command('plan <target> <memoryId> <action>').description('Plan a quarantine, restore, or deprecate (records a persisted plan without mutating the source)')
+  .requiredOption('--actor <name>').requiredOption('--reason <text>').option('--idempotency-key <key>').option('--two-person')
+  .action(async (target, memoryId, action, options) => emit(safeJson(await planRemediation(target, memoryId, action as 'quarantine' | 'restore' | 'deprecate', options.actor, options.reason, { idempotencyKey: options.idempotencyKey, requireTwoPerson: options.twoPerson === true }))));
+remediation.command('approve <target> <planId>').description('Approve a planned remediation').requiredOption('--actor <name>').requiredOption('--reason <text>')
+  .action(async (target, planId, options) => emit(safeJson(await approveRemediation(target, planId, options.actor, options.reason))));
+remediation.command('execute <target> <planId>').description('Execute an approved plan (compare-and-swap guards the source hash)').requiredOption('--actor <name>')
+  .action(async (target, planId, options) => emit(safeJson(await executeRemediation(target, planId, options.actor))));
+remediation.command('rollback <target> <planId>').description('Reverse an executed plan').requiredOption('--actor <name>').requiredOption('--reason <text>')
+  .action(async (target, planId, options) => emit(safeJson(await rollbackRemediation(target, planId, options.actor, options.reason))));
+remediation.command('reject <target> <planId>').description('Reject a planned or approved plan').requiredOption('--actor <name>').requiredOption('--reason <text>')
+  .action(async (target, planId, options) => emit(safeJson(await rejectRemediation(target, planId, options.actor, options.reason))));
+remediation.command('list <target>').description('List remediation plans').action(async (target) => emit(safeJson(await listRemediationPlans(target))));
+remediation.command('get <target> <planId>').description('Show a single remediation plan').action(async (target, planId) => emit(safeJson(await getRemediationPlan(target, planId) ?? { error: `Plan not found: ${planId}` })));
+memory.command('reconcile <target>').description('Reconcile audited inventory against the source store with documented exclusions').action(async (target) => emit(safeJson(await reconcileMemoryInventory(target, memoryOptions({})))));
+memory.command('classify <target>').description('Classify memory record types with evidence').action(async (target) => emit(safeJson(await classifyMemoryTypes(target, memoryOptions({})))));
+
+function memoryOptions(options: Record<string, string | boolean | undefined>): AuditOptions {
+  const pageSize = options.pageSize === undefined ? undefined : Number(options.pageSize);
+  return {
+    privacyMode: options.privacy as AuditOptions['privacyMode'],
+    table: options.table as string | undefined,
+    idColumn: options.idColumn as string | undefined,
+    contentColumn: options.contentColumn as string | undefined,
+    createdAtColumn: options.createdAtColumn as string | undefined,
+    sourceColumn: options.sourceColumn as string | undefined,
+    cache: options.cache !== false,
+    pageSize
+  };
 }
 
 const runtime = program.command('runtime').description('Ingest and inspect sanitized runtime evidence');
@@ -207,6 +337,38 @@ runtime.command('trace <traceId>').description('Build a source-to-action evidenc
       `Trace ${traceId}`, ...events.map((item) => `${item.timestamp}  ${item.type.padEnd(22)} ${item.target ?? item.actor}`),
       ...(graph.gaps.length ? ['Evidence gaps:', ...graph.gaps.map((gap) => `- ${gap}`)] : ['Evidence chain complete for recorded event types.'])
     ].join('\n'));
+  });
+
+const telemetry = program.command('telemetry').description('Manage local telemetry consent (off by default; nothing is transmitted in the Community edition)');
+telemetry.command('status').description('Show the current consent state and receipt history')
+  .option('--store <path>', 'consent file path', DEFAULT_CONSENT_PATH)
+  .action(async (options) => {
+    const file = await readConsent(resolve(options.store));
+    const state = consentState(file);
+    const last = file.events.at(-1);
+    await emit(`Telemetry: ${state === 'enabled' ? 'ENABLED' : 'disabled (default)'}\nConsent events: ${file.events.length}${last ? `\nLast: ${last.action} by ${last.actor} at ${last.timestamp} — ${last.reason}` : ''}`);
+  });
+telemetry.command('enable').description('Opt in to telemetry and record a consent receipt').requiredOption('--actor <name>').requiredOption('--reason <text>')
+  .option('--store <path>', 'consent file path', DEFAULT_CONSENT_PATH)
+  .action(async (options) => emit(safeJson(await appendConsentEvent(resolve(options.store), 'enable', options.actor, options.reason))));
+telemetry.command('disable').description('Revoke telemetry consent and record a receipt').requiredOption('--actor <name>').requiredOption('--reason <text>')
+  .option('--store <path>', 'consent file path', DEFAULT_CONSENT_PATH)
+  .action(async (options) => emit(safeJson(await appendConsentEvent(resolve(options.store), 'disable', options.actor, options.reason))));
+telemetry.command('preview').description('Preview the telemetry schema that an opt-in could collect (nothing is sent)')
+  .option('--json', 'JSON output')
+  .action(async (options) => {
+    const preview = buildTelemetryDataPreview();
+    await emit(options.json ? safeJson(preview) : [
+      'AgentShield telemetry data preview (nothing is transmitted)', '',
+      'Metrics:', ...preview.metrics.map((metric) => `- ${metric.name}: ${metric.description}`),
+      '', `Exclusions: ${preview.exclusions.join(', ')}`, '', preview.note
+    ].join('\n'));
+  });
+
+program.command('completion <shell>').description(`Print a shell completion script (${SUPPORTED_SHELLS.join(', ')}). Source it or write it to your completion directory.`)
+  .action(async (shell) => {
+    if (!isSupportedShell(shell)) throw new Error(`Unsupported shell: ${shell}. Supported: ${SUPPORTED_SHELLS.join(', ')}`);
+    await emit(completionScript(shell));
   });
 
 program.showHelpAfterError();
