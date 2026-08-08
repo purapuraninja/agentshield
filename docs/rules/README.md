@@ -10,6 +10,12 @@ intent. `AS-SC-001` uses AST data-flow evidence for valid JavaScript/TypeScript.
 the conservative parser use same-file taint-lite fallback, and the finding metadata states which
 analysis produced it.
 
+`AS-SC-027` compares a structured MCP tool declaration (description, `readOnlyHint`/
+`destructiveHint` annotations, declared permissions, handler reference) against the AST operations
+of the referenced handler file. A tool that declares read-only or narrowly scoped behavior but whose
+handler performs destructive operations is reported with evidence from both the configuration and
+the implementation.
+
 ## Golden quality gate
 
 Every registered production rule has one true-positive and two safe negative fixtures in

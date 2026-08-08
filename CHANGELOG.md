@@ -66,9 +66,39 @@ All notable changes follow Keep a Changelog and semantic versioning.
   production Dockerfile with healthcheck, Caddy image (builds + serves dashboard with auto-TLS),
   `docker-compose.vps.yml` (API internal + Caddy on 80/443), and a step-by-step deployment runbook
   with security checklist.
+- Sharper memory detectors: `AS-ME-003` now reports conflicts only when the records' validity
+  windows overlap; `AS-ME-005` applies a per-record freshness policy (explicit `ttl:<n>` labels,
+  per-type defaults, grace period, volatility escalation for web/email/document sources) and
+  suppresses the stale finding for facts superseded by a newer record of the same entity;
+  `AS-ME-009` matches PII through `en-US`/`id-ID` locale packs plus configurable organization terms.
+  The memory detector version bumped to `2026.08.3` to invalidate the per-record assessment cache.
+- Generic read-only PostgreSQL memory adapter (`packages/memory/src/postgres.ts`). The adapter is
+  driver-agnostic: every operation runs inside `BEGIN TRANSACTION READ ONLY` with a bounded
+  `statement_timeout`, uses keyset pagination, infers content/id columns, and never exposes mutation
+  methods, so the existing adapter conformance suite proves no write query can be issued in audit
+  mode. The real node-postgres driver is lazy-imported (with actionable guidance when absent); the
+  conformance tests use an in-memory driver that rejects non-SELECT statements.
+- Signed rulepack package (`@agentshield/rulepack`) and CLI (`agentshield rulepack
+  keygen|build|verify|install|list|rollback`). A rulepack bundle carries a deterministic ed25519
+  signature over a canonical manifest and a SHA-256 binding of the serialized rules, so tampered
+  signatures, tampered rules, and impostor publisher keys are all rejected before installation.
+  `rulepack install` keeps a local update history under `.agentshield/rulepacks.json` and
+  `rulepack rollback` restores the previous version; `scan --rulepack <bundle> --rulepack-key
+  <public.pem>` runs the verified rule set instead of the built-in rulepack.
+- MCP declaration-vs-implementation analysis (`AS-SC-027`). Structured MCP configs now normalize
+  tool input schemas, `annotations` (`readOnlyHint`/`destructiveHint`), handler references, and
+  declared server/tool permissions. When a tool declares read-only or narrowly scoped behavior but
+  its referenced handler performs destructive operations (delete, write, process execution,
+  messaging), the scanner reports `AS-SC-027` with evidence from both the declaration and the
+  handler implementation.
 
 ### Changed
 
+- Python is now parsed with a pure-TypeScript AST parser (indentation tokenizer, f-strings, imports,
+  aliases, receiver chains) instead of conservative token analysis. It produces the same
+  call/import/operation IR as JavaScript/TypeScript and provides intra-file secret-to-network data
+  flow, so `AS-SC-001` reports `ast-data-flow` evidence for Python. Malformed Python degrades to the
+  stable `PY_SYNTAX`/`AS-SC-900` path instead of a conservative warning.
 - JavaScript/TypeScript permission mapping now consumes AST operations rather than text matches.
 - `AS-SC-001` no longer fires on valid JS/TS unless a secret-derived value reaches a network call.
 - Policy v1 remains supported while policy v2 adds typed nested expressions without dynamic evaluation.

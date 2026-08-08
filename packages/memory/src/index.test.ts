@@ -17,10 +17,12 @@ async function temporaryMemory(): Promise<string> {
 }
 
 describe('memory intelligence', () => {
-  it('detects duplicate, conflict, staleness, and poisoning deterministically', async () => {
+  it('detects duplicate, conflict, and poisoning deterministically', async () => {
     const report = await auditMemory(resolve('fixtures/poisoned-memory/memories.jsonl'));
     const ids = report.findings.map((item) => item.ruleId);
-    expect(ids).toEqual(expect.arrayContaining(['AS-ME-001', 'AS-ME-003', 'AS-ME-005', 'AS-ME-010']));
+    expect(ids).toEqual(expect.arrayContaining(['AS-ME-001', 'AS-ME-003', 'AS-ME-010']));
+    // old-region is superseded by the newer new-region fact for the same entity, so it is not stale.
+    expect(ids).not.toContain('AS-ME-005');
     expect(report.findings.find((item) => item.ruleId === 'AS-ME-010')?.severity).toBe('critical');
     expect(report.assessments).toHaveLength(5);
   });
@@ -120,6 +122,84 @@ describe('memory intelligence', () => {
     const ids = report.findings.map((item) => item.ruleId);
     expect(ids).not.toContain('AS-ME-012');
     expect(ids).not.toContain('AS-ME-013');
+  });
+});
+
+describe('sharper memory detectors', () => {
+  async function auditWith(records: Array<Record<string, unknown>>, options: Record<string, unknown> = {}) {
+    const directory = await mkdtemp(join(tmpdir(), 'agentshield-sharp-'));
+    const target = join(directory, 'memories.jsonl');
+    await writeFile(target, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
+    return auditMemory(target, options);
+  }
+
+  it('flags a conflict only when validity windows overlap', async () => {
+    const report = await auditWith([
+      { id: 'a', content: 'release channel is stable', type: 'semantic', created_at: '2026-01-01T00:00:00Z', valid_from: '2026-01-01T00:00:00Z', valid_until: '2026-03-01T00:00:00Z', source_kind: 'manual' },
+      { id: 'b', content: 'release channel is beta', type: 'semantic', created_at: '2026-04-01T00:00:00Z', valid_from: '2026-04-01T00:00:00Z', source_kind: 'manual' }
+    ]);
+    expect(report.findings.some((item) => item.ruleId === 'AS-ME-003')).toBe(false);
+
+    const overlap = await auditWith([
+      { id: 'a', content: 'deployment region is us-east-1', type: 'semantic', created_at: '2026-01-01T00:00:00Z', valid_from: '2026-01-01T00:00:00Z', valid_until: '2026-12-31T00:00:00Z', source_kind: 'manual' },
+      { id: 'b', content: 'deployment region is us-west-2', type: 'semantic', created_at: '2026-06-01T00:00:00Z', valid_from: '2026-06-01T00:00:00Z', source_kind: 'manual' }
+    ]);
+    expect(overlap.findings.some((item) => item.ruleId === 'AS-ME-003')).toBe(true);
+  });
+
+  it('applies per-type TTL, volatility escalation, and explicit ttl labels', async () => {
+    const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
+    const report = await auditWith([
+      { id: 'volatile', content: 'the meeting summary is final', type: 'working', created_at: daysAgo(10), labels: ['volatile'], source_kind: 'web_document' },
+      { id: 'ttl', content: 'the migration plan is approved', type: 'working', created_at: daysAgo(40), labels: ['ttl:30'], source_kind: 'manual' },
+      { id: 'old-semantic', content: 'the vendor tier is gold', type: 'semantic', created_at: daysAgo(200), source_kind: 'manual' },
+      { id: 'fresh', content: 'the office address is unchanged', type: 'semantic', created_at: daysAgo(5), source_kind: 'manual' }
+    ]);
+    const stale = report.findings.filter((item) => item.ruleId === 'AS-ME-005');
+    expect(stale.map((item) => item.metadata.externalId)).toEqual(expect.arrayContaining(['volatile', 'ttl', 'old-semantic']));
+    expect(stale.find((item) => item.metadata.externalId === 'volatile')?.severity).toBe('high');
+    expect(stale.find((item) => item.metadata.externalId === 'old-semantic')?.severity).toBe('medium');
+    expect(stale.find((item) => item.metadata.externalId === 'volatile')?.metadata.ttlDays).toBe(7);
+    expect(stale.find((item) => item.metadata.externalId === 'ttl')?.metadata.ttlDays).toBe(30);
+  });
+
+  it('suppresses the stale finding for a record superseded by a newer fact', async () => {
+    const report = await auditWith([
+      { id: 'old', content: 'project deadline is january', type: 'semantic', created_at: '2026-01-01T00:00:00Z', source_kind: 'manual' },
+      { id: 'new', content: 'project deadline is february', type: 'semantic', created_at: '2026-07-01T00:00:00Z', source_kind: 'manual' }
+    ]);
+    expect(report.findings.some((item) => item.ruleId === 'AS-ME-005' && item.metadata.externalId === 'old')).toBe(false);
+    expect(report.findings.some((item) => item.ruleId === 'AS-ME-003')).toBe(true);
+  });
+
+  it('matches PII with locale packs and organization terms', async () => {
+    const report = await auditWith([
+      { id: 'nik', content: 'NIK saya 3201011201950001', type: 'semantic', created_at: '2026-08-01T00:00:00Z', source_kind: 'manual' },
+      { id: 'npwp', content: 'NPWP: 12.345.678.9-012.345', type: 'semantic', created_at: '2026-08-01T00:00:00Z', source_kind: 'manual' },
+      { id: 'ssn', content: 'SSN 123-45-6789', type: 'semantic', created_at: '2026-08-01T00:00:00Z', source_kind: 'manual' }
+    ]);
+    const pii = report.findings.filter((item) => item.ruleId === 'AS-ME-009');
+    expect(pii).toHaveLength(3);
+    expect(pii.every((item) => item.evidence[0]?.excerpt.includes('[REDACTED:pii]'))).toBe(true);
+    expect(pii[0]?.metadata.locales).toEqual(['en-US', 'id-ID']);
+  });
+
+  it('flags organization-specific terms only when configured', async () => {
+    const records = [
+      { id: 'badge', content: 'employee badge: 77x92', type: 'semantic', created_at: '2026-08-01T00:00:00Z', source_kind: 'manual' }
+    ];
+    const without = await auditWith(records);
+    expect(without.findings.some((item) => item.ruleId === 'AS-ME-009')).toBe(false);
+    const withTerms = await auditWith(records, { organizationTerms: ['employee badge'] });
+    expect(withTerms.findings.some((item) => item.ruleId === 'AS-ME-009')).toBe(true);
+  });
+
+  it('ignores malformed ttl labels instead of crashing the audit', async () => {
+    const report = await auditWith([
+      { id: 'bad-ttl', content: 'the migration is scheduled', type: 'working', created_at: '2026-08-01T00:00:00Z', labels: ['ttl:abc'], source_kind: 'manual' }
+    ]);
+    expect(report.status).toBe('completed');
+    expect(report.findings.some((item) => item.ruleId === 'AS-ME-005')).toBe(false);
   });
 });
 

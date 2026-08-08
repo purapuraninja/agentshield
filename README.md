@@ -56,6 +56,14 @@ agentshield baseline add <baseline.json> <report.json> --finding <sha256:fingerp
 agentshield baseline validate <baseline.json>
 agentshield baseline prune <baseline.json>
 
+agentshield rulepack keygen --dir <keys>
+agentshield rulepack build <version> <publisher> --key <private.pem> --output bundle.json
+agentshield rulepack verify <bundle.json> --key <public.pem>
+agentshield rulepack install <bundle.json> --key <public.pem> --store .agentshield
+agentshield rulepack list
+agentshield rulepack rollback
+agentshield scan <target> --rulepack <bundle.json> --rulepack-key <public.pem>
+
 agentshield memory audit <json|jsonl|markdown|sqlite>
 agentshield memory quarantine <target> <memory-id> --actor <name> --reason <reason>
 agentshield memory restore <target> <memory-id> --actor <name> --reason <reason>
@@ -79,7 +87,11 @@ Memory inventory runs through a versioned, paginated, read-only adapter contract
 results are cached in `.agentshield/memory-cache.json`; the cache key includes adapter, external ID,
 content and record fingerprints, detector version, privacy mode, and a daily freshness bucket. Use
 `--no-cache` to force reassessment or `--page-size <1..5000>` to tune inventory pages. Relational
-duplicate/conflict checks are always recomputed over the complete current inventory.
+duplicate/conflict checks are always recomputed over the complete current inventory. Conflicts are
+reported only when validity windows overlap; staleness follows a per-record policy (explicit
+`ttl:<n>` labels, per-type defaults, volatility escalation for web/email/document sources, and
+supersession by newer facts); and PII matches `en-US`/`id-ID` locale packs plus configurable
+organization terms.
 
 ## Local API and dashboard
 
@@ -96,7 +108,9 @@ normalized reports under `.agentshield/`.
 
 ## Security model
 
-- JavaScript/TypeScript use AST analysis; JSON/JSONL/YAML/TOML/Markdown use structural parsers.
+- JavaScript/TypeScript and Python use AST analysis; JSON/JSONL/YAML/TOML/Markdown use structural
+  parsers. The Python parser is pure TypeScript: it tokenizes indentation-based blocks and f-strings
+  and produces the same call/import/operation/data-flow IR as the JS/TS path.
 - Static scans never import or execute target code.
 - Direct `.zip`, `.whl`, `.tar`, and `.tar.gz`/`.tgz` targets are decoded in memory with file-count,
   expanded-size, compression-ratio, path-depth, entry-size, absolute-path, and traversal limits;
@@ -105,10 +119,14 @@ normalized reports under `.agentshield/`.
 - Symbolic links, oversized files, build output, and dependency directories are skipped.
 - Parser failures, including stack exhaustion on pathologically nested input, are contained and create
   an explicit incomplete-analysis finding rather than a falsely clean result.
-- Conservative Python/shell analysis creates an explicit analysis-gap finding instead of silently
-  claiming AST coverage.
+- Conservative shell/PowerShell analysis creates an explicit analysis-gap finding instead of
+  silently claiming AST coverage.
 - Raw credentials are redacted before evidence or error serialization.
 - Runtime payloads are hashed; sensitive metadata keys become hashes.
+- Rulepacks are signed bundles: a deterministic manifest (publisher, version, rule digest) is signed
+  with ed25519, and the rules are bound to the manifest by SHA-256. `rulepack install` refuses a
+  bundle that fails signature or digest verification, and `rulepack rollback` restores the previous
+  installed version from local state. Scanner rules only change through a verified rulepack.
 - Cloud upload, automatic hard deletion, LLM classification, and telemetry are disabled.
 
 AgentShield cannot prove that a component is safe. Review declared behavior, dependency provenance,

@@ -146,6 +146,9 @@ importers:
       '@agentshield/reports':
         specifier: workspace:*
         version: link:../reports
+      '@agentshield/rulepack':
+        specifier: workspace:*
+        version: link:../rulepack
       '@agentshield/runtime':
         specifier: workspace:*
         version: link:../runtime
@@ -192,6 +195,12 @@ importers:
       '@agentshield/memory':
         specifier: workspace:*
         version: link:../memory
+      '@agentshield/scanner':
+        specifier: workspace:*
+        version: link:../scanner
+
+  packages/rulepack:
+    dependencies:
       '@agentshield/scanner':
         specifier: workspace:*
         version: link:../scanner

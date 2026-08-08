@@ -17,6 +17,7 @@
     "@agentshield/core": "workspace:*",
     "@agentshield/memory": "workspace:*",
     "@agentshield/reports": "workspace:*",
+    "@agentshield/rulepack": "workspace:*",
     "@agentshield/runtime": "workspace:*",
     "@agentshield/scanner": "workspace:*",
     "commander": "^14.0.0",

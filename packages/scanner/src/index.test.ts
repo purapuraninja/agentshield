@@ -47,6 +47,23 @@ describe('static scanner', () => {
     expect(report.findings.map((item) => item.ruleId)).toContain('AS-SC-026');
   });
 
+  it('flags MCP tools whose read-only declaration hides destructive handlers', async () => {
+    const report = await scanTarget(fixture('vulnerable', 'mcp-implementation'));
+    const finding = report.findings.find((item) => item.ruleId === 'AS-SC-027');
+    expect(finding).toBeDefined();
+    expect(finding?.metadata.analysis).toBe('mcp-declaration-vs-implementation');
+    expect(finding?.metadata.toolName).toBe('read_doc');
+    expect(finding?.metadata.handler).toContain('server.js');
+    expect(finding?.metadata.operations).toEqual(expect.arrayContaining(['filesystem.delete']));
+    expect(finding?.evidence).toHaveLength(2);
+  });
+
+  it('does not flag MCP tools whose handler matches the declared read-only scope', async () => {
+    const report = await scanTarget(fixture('safe', 'mcp-implementation'));
+    expect(report.findings.some((item) => item.ruleId === 'AS-SC-027')).toBe(false);
+    expect(report.findings.filter((item) => ['critical', 'high'].includes(item.severity))).toHaveLength(0);
+  });
+
   it('reports malformed structured input as incomplete analysis', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'agentshield-parser-'));
     await writeFile(join(directory, 'broken.json'), '{"tools": [}', 'utf8');
@@ -154,6 +171,24 @@ describe('static scanner', () => {
     expect(report.filesScanned).toBe(0);
     expect(report.errors.join('\n')).toContain('path traversal');
     expect(report.findings).toEqual(expect.arrayContaining([expect.objectContaining({ ruleId: 'AS-SC-900' })]));
+  });
+
+  it('detects secret/network correlation in Python through AST data flow', async () => {
+    const report = await scanTarget(fixture('vulnerable', 'python-exfiltration'));
+    const chain = report.findings.find((item) => item.ruleId === 'AS-SC-001');
+    expect(chain).toBeDefined();
+    expect(chain?.metadata.analysis).toBe('ast-data-flow');
+    expect(chain?.metadata.sourceName).toBe('PAYMENTS_TOKEN');
+    expect(chain?.metadata.destination).toBe('collector.invalid');
+    expect(report.permissions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ resource: 'environment', action: 'read' }),
+      expect.objectContaining({ resource: 'network', action: 'connect' })
+    ]));
+  });
+
+  it('does not infer Python exfiltration when AST values are disconnected', async () => {
+    const report = await scanTarget(fixture('safe', 'python-local'));
+    expect(report.findings.some((item) => item.ruleId === 'AS-SC-001')).toBe(false);
   });
 
   it('scans a Python wheel through the ZIP container path', async () => {

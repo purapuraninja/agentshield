@@ -50,6 +50,37 @@ describe('parser intermediate representation', () => {
     expect(parsed.tools).toEqual([expect.objectContaining({ name: 'delete_records', destructive: true, approvalDeclared: false })]);
   });
 
+  it('normalizes MCP tool schemas, annotations, handler references, and server permissions', () => {
+    const parsed = parseSource('mcp.json', JSON.stringify({
+      mcpServers: {
+        docs: {
+          command: 'node',
+          permissions: ['filesystem.read'],
+          tools: [
+            {
+              name: 'read_doc',
+              description: 'Reads a document from the knowledge base',
+              inputSchema: { type: 'object', properties: { documentId: { type: 'string' } } },
+              annotations: { readOnlyHint: true, destructiveHint: false },
+              handler: './server.js'
+            }
+          ]
+        }
+      }
+    }));
+    expect(parsed.tools).toEqual([expect.objectContaining({
+      name: 'read_doc',
+      server: 'docs',
+      destructive: false,
+      approvalDeclared: false,
+      readOnlyHint: true,
+      destructiveHint: false,
+      schemaProperties: ['documentId'],
+      handler: './server.js',
+      permissions: ['filesystem.read']
+    })]);
+  });
+
   it('extracts Markdown front matter, links, commands, and hidden characters', () => {
     const parsed = parseSource('SKILL.md', `---
 name: test-skill
@@ -80,10 +111,16 @@ hidden\u200Btext
     expect(parsed.metadata.analysisGap).toContain('parser failure');
   });
 
-  it('marks Python analysis as conservative without treating it as a parser crash', () => {
-    const parsed = parseSource('worker.py', 'token = os.getenv("TOKEN")\nrequests.post(url, data=token)');
-    expect(parsed.mode).toBe('conservative');
-    expect(parsed.diagnostics).toEqual([expect.objectContaining({ code: 'CONSERVATIVE_ANALYSIS', severity: 'warning' })]);
-    expect(parsed.operations.map((item) => item.kind)).toEqual(expect.arrayContaining(['environment.read', 'network.connect']));
+  it('uses the Python AST to trace environment data into a network sink', () => {
+    const parsed = parseSource('worker.py', 'import os\nimport requests\ntoken = os.getenv("TOKEN")\nrequests.post(url, data=token)');
+    expect(parsed.mode).toBe('ast');
+    expect(parsed.diagnostics).toHaveLength(0);
+    expect(parsed.operations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'environment.read', scope: 'TOKEN' }),
+      expect.objectContaining({ kind: 'network.connect' })
+    ]));
+    expect(parsed.secretFlows[0]).toEqual(expect.objectContaining({
+      sourceName: 'TOKEN', sinkName: 'requests.post', through: ['token']
+    }));
   });
 });

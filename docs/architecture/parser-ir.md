@@ -5,13 +5,15 @@ cross-cutting checks. The contract lives in `packages/parsers` and never execute
 
 ## Analysis modes
 
-- `ast`: JavaScript and TypeScript use the TypeScript Compiler API. Calls, imports, environment
-  reads, capabilities, and same-file secret-to-network flows are represented structurally.
+- `ast`: JavaScript and TypeScript use the TypeScript Compiler API. Python uses the pure-TypeScript
+  parser in `packages/parsers/src/python.ts`, which tokenizes indentation-based blocks and f-strings
+  and parses into the same call/import/operation/flow IR. Calls, imports, environment reads,
+  capabilities, and same-file secret-to-network flows are represented structurally.
 - `structured`: JSON, JSONL, YAML, TOML, and Markdown produce typed documents, MCP tool definitions,
   front matter, links, code blocks, commands, hidden instructions, and parse diagnostics.
-- `conservative`: Python, POSIX shell, and PowerShell currently emit token-based operations plus an
-  explicit `CONSERVATIVE_ANALYSIS` warning. The scanner creates `AS-SC-901`; it does not claim that
-  AST-level analysis completed.
+- `conservative`: POSIX shell and PowerShell currently emit token-based operations plus an explicit
+  `CONSERVATIVE_ANALYSIS` warning. The scanner creates `AS-SC-901`; it does not claim that AST-level
+  analysis completed.
 
 ## Main nodes
 
@@ -20,9 +22,10 @@ location. `CallNode` and `ImportNode` preserve code structure. `ToolDefinition` 
 tool declarations. `SecretFlow` connects an environment source to a network sink and records the
 identifiers through which the value moved.
 
-Fatal diagnostics generate `AS-SC-900` and make a scan partial. Conservative fallback generates
-`AS-SC-901` without marking the file as a parser crash. Rule regexes remain a fallback for formats
-without AST analysis and for content-level indicators such as hidden instructions.
+Fatal diagnostics generate `AS-SC-900` and make a scan partial. Python parse failures use the stable
+`PY_SYNTAX` code and still return the partial IR collected before the failure. Conservative fallback
+generates `AS-SC-901` without marking the file as a parser crash. Rule regexes remain a fallback for
+formats without AST analysis and for content-level indicators such as hidden instructions.
 
 ## Byte-order marks
 
@@ -46,7 +49,9 @@ so a case can be replayed and promoted to a regression test.
 
 ## Current data-flow boundary
 
-The v0.2 analysis is intra-file and lexical. It follows variable declarations, assignments, nested
-call arguments, object literals, and shorthand properties. It does not yet resolve imports,
-callbacks, class fields, aliases across modules, or runtime reflection. Evidence metadata states
-`ast-data-flow` when the stronger path is available.
+The v0.2 analysis is intra-file and lexical. For JavaScript/TypeScript it follows variable
+declarations, assignments, nested call arguments, object literals, and shorthand properties. For
+Python it follows the same shapes plus imports (`import os`, `from os import environ`, aliases), dict
+and list literals, f-string interpolation, and receiver chains such as `open(...).write(...)`. It
+does not yet resolve callbacks, class fields, aliases across modules, or runtime reflection. Evidence
+metadata states `ast-data-flow` when the stronger path is available.

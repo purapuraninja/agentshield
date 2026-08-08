@@ -6,6 +6,8 @@ import {
   normalizePath, redactSecrets, sha256, trustAssessmentSchema, type Confidence, type Finding,
   type MemoryAuditReport, type MemoryRecord, type Severity, type TrustAssessment
 } from '@agentshield/core';
+import { normalizeRecord } from './normalize.js';
+import { createPgDriver, createPostgresAdapter } from './postgres.js';
 
 export type PrivacyMode = 'none' | 'secrets' | 'pii-secrets' | 'metadata-only';
 export interface MemoryAdapterOptions {
@@ -15,11 +17,24 @@ export interface MemoryAdapterOptions {
   createdAtColumn?: string;
   sourceColumn?: string;
   pageSize?: number;
+  /** PostgreSQL-only: connection string or individual connection options. */
+  connectionString?: string;
+  database?: string;
+  host?: string;
+  port?: number;
+  user?: string;
+  password?: string;
+  ssl?: boolean;
+  statementTimeoutMs?: number;
 }
 export interface AuditOptions extends MemoryAdapterOptions {
   privacyMode?: PrivacyMode;
   includeQuarantined?: boolean;
   cache?: boolean;
+  /** PII locale packs to apply; defaults to both built-in packs. */
+  piiLocales?: string[];
+  /** Organization-specific PII terms, e.g. `employee id`, detected as `term: value`. */
+  organizationTerms?: string[];
 }
 
 export const MEMORY_ADAPTER_CONTRACT_VERSION = 1;
@@ -79,7 +94,7 @@ interface QuarantineEntry {
 }
 interface QuarantineFile { version: 1; entries: QuarantineEntry[] }
 
-const MEMORY_DETECTOR_VERSION = '2026.08.2';
+const MEMORY_DETECTOR_VERSION = '2026.08.3';
 interface CachedRecordAssessment {
   sourceKey: string;
   adapterId: string;
@@ -138,17 +153,17 @@ export const memoryRules: MemoryRule[] = [
     remediation: 'Review both records and retain the freshest authoritative version.',
     owner: 'core-security', reviewDate: '2026-08-04', limitations: 'Token Jaccard similarity may miss paraphrased duplicates.' },
   { id: 'AS-ME-003', title: 'Conflicting memory values', severity: 'high', confidence: 'high', category: 'memory',
-    description: 'Memory records disagree about the same entity or attribute.',
+    description: 'Memory records disagree about the same entity or attribute while their validity windows overlap.',
     remediation: 'Review both records, prefer the fresher authoritative source, and quarantine the superseded value.',
-    owner: 'core-security', reviewDate: '2026-08-04', limitations: 'Only simple entity/attribute/value patterns at the start of text are compared.' },
+    owner: 'core-security', reviewDate: '2026-08-08', limitations: 'Only simple entity/attribute/value patterns at the start of text are compared, and a conflict requires overlapping validity windows.' },
   { id: 'AS-ME-004', title: 'Expired memory', severity: 'high', confidence: 'high', category: 'memory',
     description: 'The record is past its explicit validity date.',
     remediation: 'Quarantine or refresh the record from its authoritative source.',
     owner: 'core-security', reviewDate: '2026-08-04', limitations: 'Validity is only checked when an explicit valid_until date is present.' },
   { id: 'AS-ME-005', title: 'Stale memory', severity: 'medium', confidence: 'high', category: 'memory',
-    description: 'The record is older than the configured freshness threshold.',
+    description: 'The record is older than its freshness window, which considers explicit TTL labels, memory type, and source volatility.',
     remediation: 'Verify the fact and set an explicit review date or TTL.',
-    owner: 'core-security', reviewDate: '2026-08-04', limitations: 'Age is generic and does not consider volatility or memory type policy.' },
+    owner: 'core-security', reviewDate: '2026-08-08', limitations: 'A record superseded by a newer fact for the same entity is not flagged stale; volatility is inferred from source kind and labels.' },
   { id: 'AS-ME-006', title: 'Missing memory timestamp', severity: 'low', confidence: 'high', category: 'memory',
     description: 'Freshness cannot be established without a creation timestamp.',
     remediation: 'Add a creation timestamp and validity window at ingestion.',
@@ -162,9 +177,9 @@ export const memoryRules: MemoryRule[] = [
     remediation: 'Rotate any exposed credential and store only a secret reference, never the value.',
     owner: 'core-security', reviewDate: '2026-08-04', limitations: 'Pattern matching can miss non-standard credential formats.' },
   { id: 'AS-ME-009', title: 'Personal data in memory', severity: 'high', confidence: 'high', category: 'memory',
-    description: 'The record contains a personal-data pattern.',
+    description: 'The record contains a personal-data pattern matched by a locale pack or an organization term.',
     remediation: 'Minimize or tokenize personal data and apply an explicit retention policy.',
-    owner: 'core-security', reviewDate: '2026-08-04', limitations: 'PII patterns are limited and lack locale or organization term packs.' },
+    owner: 'core-security', reviewDate: '2026-08-08', limitations: 'Locale packs cover en-US and id-ID; organization terms must be configured and exact.' },
   { id: 'AS-ME-010', title: 'Instruction-like untrusted memory', severity: 'high', confidence: 'high', category: 'memory',
     description: 'The record contains language that may redirect agent policy or tool behavior.',
     remediation: 'Quarantine the record, inspect its provenance, and prevent retrieved content from becoming trusted instructions.',
@@ -185,39 +200,6 @@ export const memoryRules: MemoryRule[] = [
 
 export function getMemoryRule(id: string): MemoryRule | undefined {
   return memoryRules.find((rule) => rule.id.toLowerCase() === id.toLowerCase());
-}
-
-function recordId(adapter: string, target: string, externalId: string): string {
-  return `mem_${sha256(`${adapter}\0${resolve(target)}\0${externalId}`).replace('sha256:', '').slice(0, 24)}`;
-}
-
-function normalizeRecord(raw: unknown, adapter: string, target: string, externalId: string, sourceUri?: string): MemoryRecord {
-  const object = raw && typeof raw === 'object' ? raw as Record<string, unknown> : { content: raw };
-  const contentValue = object.content ?? object.text ?? object.value ?? object.memory ?? object.message ?? raw;
-  const content = typeof contentValue === 'string' ? contentValue : JSON.stringify(contentValue);
-  const createdAt = stringValue(object.created_at ?? object.createdAt ?? object.timestamp ?? object.date);
-  const validUntil = stringValue(object.valid_until ?? object.validUntil ?? object.expires_at ?? object.expiresAt);
-  const rawType = stringValue(object.type)?.toLowerCase();
-  const type = ['working', 'episodic', 'semantic', 'procedural'].includes(rawType ?? '') ? rawType as MemoryRecord['type'] : 'unknown';
-  return memoryRecordSchema.parse({
-    memoryId: recordId(adapter, target, externalId), externalId, type, content, contentHash: sha256(content),
-    source: { kind: stringValue(object.source_kind) ?? adapter, uri: stringValue(object.source_uri ?? object.source) ?? sourceUri ?? normalizePath(target), capturedAt: createdAt },
-    createdBy: stringValue(object.created_by ?? object.createdBy), createdAt, validFrom: stringValue(object.valid_from ?? object.validFrom),
-    validUntil, confidence: numberValue(object.confidence, 0.5), authority: numberValue(object.authority, 0.5),
-    integrityStatus: object.integrity_status === 'verified' || object.integrity_status === 'mismatch' ? object.integrity_status : 'unverified',
-    labels: Array.isArray(object.labels) ? object.labels.map(String) : [], version: numberValue(object.version, 1),
-    metadata: { originalKeys: Object.keys(object).filter((key) => !['content', 'text', 'value', 'memory', 'message'].includes(key)) }
-  });
-}
-
-function stringValue(value: unknown): string | undefined {
-  if (typeof value === 'string' && value.trim()) return value;
-  if (value instanceof Date) return value.toISOString();
-  return;
-}
-function numberValue(value: unknown, fallback: number): number {
-  const number = typeof value === 'number' ? value : Number(value);
-  return Number.isFinite(number) ? number : fallback;
 }
 
 async function loadJson(path: string): Promise<LoadResult> {
@@ -510,8 +492,21 @@ async function loadFromAdapter(adapter: MemoryAdapter, pageSize?: number): Promi
   return { adapter: connection.adapter, records, errors };
 }
 
+/**
+ * Selects the adapter for a target. `postgres://`/`postgresql://` targets use the read-only
+ * PostgreSQL adapter (lazy-importing the optional `pg` driver); everything else uses the built-in
+ * file/JSON/JSONL/Markdown/SQLite adapters.
+ */
+async function createAdapterForTarget(target: string, options: MemoryAdapterOptions = {}): Promise<MemoryAdapter> {
+  if (/^postgres(?:ql)?:\/\//i.test(target)) {
+    const driver = await createPgDriver({ connectionString: target, ...options });
+    return createPostgresAdapter(driver, options);
+  }
+  return createMemoryAdapter(target, options);
+}
+
 export async function loadMemory(target: string, options: MemoryAdapterOptions = {}): Promise<LoadResult> {
-  return loadFromAdapter(createMemoryAdapter(target, options), options.pageSize);
+  return loadFromAdapter(await createAdapterForTarget(target, options), options.pageSize);
 }
 
 function finding(ruleId: string, title: string, description: string, severity: Finding['severity'], record: MemoryRecord,
@@ -527,12 +522,40 @@ const SECRET_TESTS = [
   /\b(?:sk|rk|pk)-[A-Za-z0-9_-]{12,}\b/, /\bAKIA[0-9A-Z]{16}\b/, /\bgh[pousr]_[A-Za-z0-9]{20,}\b/,
   /(?:password|passwd|token|secret|api[_-]?key)\s*[:=]\s*['\"]?[^\s'\"]{8,}/i
 ];
-const PII_TESTS = [
-  /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i,
-  /\b(?:\+?62|0)8[1-9][0-9]{7,11}\b/,
-  /\b\d{3}-\d{2}-\d{4}\b/,
-  /\b\d{16}\b/
-];
+const PII_LOCALE_PACKS: Record<string, RegExp[]> = {
+  'en-US': [
+    /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i,
+    /\b\d{3}-\d{2}-\d{4}\b/,          // SSN
+    /\b\d{16}\b/,                        // payment card / account number
+    /\b\d{4}\s\d{4}\s\d{4}\s\d{4}\b/  // spaced card number
+  ],
+  'id-ID': [
+    /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i,
+    /\b(?:\+?62|0)8[1-9][0-9]{7,11}\b/,  // mobile number
+    /\b\d{16}\b/,                        // NIK / card number
+    /\b\d{2}\.\d{3}\.\d{3}\.\d{1}-\d{3}\.\d{3}\b/ // NPWP
+  ]
+};
+
+export const DEFAULT_PII_LOCALES = ['en-US', 'id-ID'];
+
+export function piiPatternsFor(locales: string[] | undefined, organizationTerms: string[] | undefined): RegExp[] {
+  const patterns: RegExp[] = [];
+  for (const locale of locales ?? DEFAULT_PII_LOCALES) {
+    for (const pattern of PII_LOCALE_PACKS[locale] ?? []) {
+      if (!patterns.some((existing) => existing.source === pattern.source)) patterns.push(pattern);
+    }
+  }
+  for (const term of organizationTerms ?? []) {
+    if (!term.trim()) continue;
+    patterns.push(new RegExp(`(?:${escapeRegExp(term.trim())})\\s*[:=]\\s*[^\\s,.;]{4,}`, 'i'));
+  }
+  return patterns;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 const POISON_TESTS = [
   /(?:ignore|disregard|forget)\s+(?:all\s+)?(?:previous|prior|system|developer)\s+instructions?/i,
   /(?:bypass|disable|override)\s+(?:approval|policy|safety|guardrail|system)/i,
@@ -608,13 +631,55 @@ function entityValue(content: string): { entity: string; value: string } | undef
   return { entity: match[1]!.trim().toLowerCase(), value: match[2]!.trim().toLowerCase() };
 }
 
-function applyPrivacy(value: string, mode: PrivacyMode): string {
+function applyPrivacy(value: string, mode: PrivacyMode, piiPatterns: RegExp[]): string {
   if (mode === 'metadata-only') return '[CONTENT REDACTED:metadata-only]';
   let output = mode === 'none' ? value : redactSecrets(value);
   if (mode === 'pii-secrets') {
-    for (const pattern of PII_TESTS) output = output.replace(new RegExp(pattern.source, `${pattern.flags}g`), '[REDACTED:pii]');
+    for (const pattern of piiPatterns) output = output.replace(new RegExp(pattern.source, `${pattern.flags}g`), '[REDACTED:pii]');
   }
   return maskEvidence(output);
+}
+
+interface FreshnessPolicy {
+  ttlDays: number;
+  graceDays: number;
+  volatility: 'low' | 'high';
+  reviewDueAt: string;
+}
+
+/**
+ * Per-record freshness policy: an explicit `ttl:<n>` label wins, then a per-type default, then a
+ * generic default. Volatile sources (web, email, documents) and the `volatile` label get a shorter
+ * review window and escalate staleness severity.
+ */
+function freshnessPolicy(record: MemoryRecord, now: number): FreshnessPolicy {
+  const ttlLabel = record.labels.find((label) => /^ttl:\d+$/i.test(label));
+  const parsedTtl = ttlLabel ? Number(ttlLabel.slice(4)) : undefined;
+  const explicitTtl = parsedTtl !== undefined && Number.isFinite(parsedTtl) && parsedTtl > 0 ? Math.round(parsedTtl) : undefined;
+  const typeTtl: Record<string, number> = { working: 7, episodic: 90, semantic: 180, procedural: 180 };
+  const ttlDays = explicitTtl ?? typeTtl[record.type] ?? 180;
+  const volatility: 'low' | 'high' = record.labels.includes('volatile') ||
+    /(?:web|email|document|unknown|markdown)/i.test(record.source.kind) ? 'high' : 'low';
+  const graceDays = Math.max(1, Math.min(14, Math.ceil(ttlDays * 0.1)));
+  return { ttlDays, graceDays, volatility, reviewDueAt: new Date(now + ttlDays * 86_400_000).toISOString() };
+}
+
+interface EntityFact {
+  record: MemoryRecord;
+  value: string;
+  from: number;
+  until: number;
+}
+
+function factWindow(record: MemoryRecord): { from: number; until: number } {
+  const from = record.validFrom ? Date.parse(record.validFrom) : record.createdAt ? Date.parse(record.createdAt) : Number.NaN;
+  const until = record.validUntil ? Date.parse(record.validUntil) : Number.POSITIVE_INFINITY;
+  return { from: Number.isFinite(from) ? from : Number.NEGATIVE_INFINITY, until };
+}
+
+/** Two facts conflict only when their validity windows overlap in time. */
+function windowsOverlap(a: { from: number; until: number }, b: { from: number; until: number }): boolean {
+  return a.from <= b.until && b.from <= a.until;
 }
 
 function cacheIdentity(sourceKey: string, adapterId: string, record: MemoryRecord, privacyMode: PrivacyMode, dateBucket: string): {
@@ -695,7 +760,7 @@ async function createAssessmentCache(target: string, adapterId: string, privacyM
   };
 }
 
-function assessRecord(record: MemoryRecord, privacyMode: PrivacyMode, now: number): {
+function assessRecord(record: MemoryRecord, privacyMode: PrivacyMode, now: number, options: AuditOptions = {}): {
   findings: Finding[];
   assessment: TrustAssessment;
 } {
@@ -703,8 +768,11 @@ function assessRecord(record: MemoryRecord, privacyMode: PrivacyMode, now: numbe
   const created = record.createdAt ? Date.parse(record.createdAt) : Number.NaN;
   const ageDays = Number.isFinite(created) ? Math.max(0, (now - created) / 86_400_000) : undefined;
   const expired = record.validUntil ? Date.parse(record.validUntil) < now : false;
+  const policy = freshnessPolicy(record, now);
+  const stale = ageDays !== undefined && ageDays > policy.ttlDays + policy.graceDays;
+  const piiPatterns = piiPatternsFor(options.piiLocales, options.organizationTerms);
   const secrets = SECRET_TESTS.some((pattern) => pattern.test(record.content));
-  const pii = PII_TESTS.some((pattern) => pattern.test(record.content));
+  const pii = piiPatterns.some((pattern) => pattern.test(record.content));
   const poisonMatches = POISON_TESTS.filter((pattern) => pattern.test(record.content)).length;
   const untrustedSource = /(?:web|email|pdf|document|unknown|markdown)/i.test(record.source.kind);
   const invisibleUnicode = INVISIBLE_UNICODE_TEST.test(record.content.replace(/^\uFEFF/, ''));
@@ -714,20 +782,20 @@ function assessRecord(record: MemoryRecord, privacyMode: PrivacyMode, now: numbe
   if (encoded.htmlEntity) encodedEncodings.push('html-entity');
   const encodedHit = encodedEncodings.length > 0;
   if (expired) findings.push(finding('AS-ME-004', 'Expired memory', 'The record is past its explicit validity date.', 'high', record, `validUntil=${record.validUntil}`, 'Quarantine or refresh the record from its authoritative source.'));
-  else if (ageDays !== undefined && ageDays > 180) findings.push(finding('AS-ME-005', 'Stale memory', `The record is approximately ${Math.floor(ageDays)} days old.`, 'medium', record, `createdAt=${record.createdAt}`, 'Verify the fact and set an explicit review date or TTL.'));
+  else if (stale) findings.push(finding('AS-ME-005', 'Stale memory', `The record is approximately ${Math.floor(ageDays)} days old and past its ${policy.ttlDays}-day freshness window.`, policy.volatility === 'high' ? 'high' : 'medium', record, `createdAt=${record.createdAt}`, 'Verify the fact and set an explicit review date or TTL.', { ttlDays: policy.ttlDays, volatility: policy.volatility, reviewDueAt: policy.reviewDueAt }));
   if (!record.createdAt) findings.push(finding('AS-ME-006', 'Missing memory timestamp', 'Freshness cannot be established without a creation timestamp.', 'low', record, 'createdAt is absent', 'Add a creation timestamp and validity window at ingestion.'));
   if (!record.source.uri || record.source.kind === 'unknown') findings.push(finding('AS-ME-007', 'Weak memory provenance', 'The source is missing or not attributable.', 'medium', record, 'source provenance is incomplete', 'Record the source URI, capture time, and creating component.'));
-  if (secrets) findings.push(finding('AS-ME-008', 'Secret material in memory', 'The record contains credential-like material.', 'critical', record, applyPrivacy(record.content, 'secrets'), 'Rotate any exposed credential and store only a secret reference, never the value.'));
-  if (pii) findings.push(finding('AS-ME-009', 'Personal data in memory', 'The record contains a personal-data pattern.', 'high', record, applyPrivacy(record.content, 'pii-secrets'), 'Minimize or tokenize personal data and apply an explicit retention policy.'));
+  if (secrets) findings.push(finding('AS-ME-008', 'Secret material in memory', 'The record contains credential-like material.', 'critical', record, applyPrivacy(record.content, 'secrets', piiPatterns), 'Rotate any exposed credential and store only a secret reference, never the value.'));
+  if (pii) findings.push(finding('AS-ME-009', 'Personal data in memory', 'The record contains a personal-data pattern.', 'high', record, applyPrivacy(record.content, 'pii-secrets', piiPatterns), 'Minimize or tokenize personal data and apply an explicit retention policy.', { locales: options.piiLocales ?? DEFAULT_PII_LOCALES }));
   if (poisonMatches) findings.push(finding('AS-ME-010', 'Instruction-like untrusted memory', 'The record contains language that may redirect agent policy or tool behavior.', poisonMatches > 1 || untrustedSource ? 'critical' : 'high', record,
-    applyPrivacy(record.content, privacyMode), 'Quarantine the record, inspect its provenance, and prevent retrieved content from becoming trusted instructions.', { deterministic: true, matchedIndicators: poisonMatches }));
+    applyPrivacy(record.content, privacyMode, piiPatterns), 'Quarantine the record, inspect its provenance, and prevent retrieved content from becoming trusted instructions.', { deterministic: true, matchedIndicators: poisonMatches }));
   if (invisibleUnicode) findings.push(finding('AS-ME-012', 'Hidden Unicode in memory', 'The record contains zero-width or bidirectional control characters that can make reviewed text differ from interpreted text.', untrustedSource ? 'critical' : 'high', record,
-    applyPrivacy(record.content, privacyMode), 'Normalize or strip invisible control characters, re-ingest from the authoritative source, and quarantine the record when it originated from untrusted content.', { deterministic: true, indicator: 'invisible-unicode' }));
+    applyPrivacy(record.content, privacyMode, piiPatterns), 'Normalize or strip invisible control characters, re-ingest from the authoritative source, and quarantine the record when it originated from untrusted content.', { deterministic: true, indicator: 'invisible-unicode' }));
   if (encodedHit) findings.push(finding('AS-ME-013', 'Encoded hidden instruction in memory', 'The record hides instruction-like text inside base64 or HTML numeric entities so it bypasses plain-text review.', untrustedSource ? 'critical' : 'high', record,
-    applyPrivacy(record.content, privacyMode), 'Quarantine the record, decode the payload for review only, and block decoded retrieved content from becoming trusted instructions.', { deterministic: true, encodings: encodedEncodings }));
+    applyPrivacy(record.content, privacyMode, piiPatterns), 'Quarantine the record, decode the payload for review only, and block decoded retrieved content from becoming trusted instructions.', { deterministic: true, encodings: encodedEncodings }));
   if (record.integrityStatus === 'mismatch') findings.push(finding('AS-ME-011', 'Memory integrity mismatch', 'The stored content hash does not match the hash recorded at ingestion, so the record was modified outside the agent or corrupted.', 'critical', record,
     `integrityStatus=mismatch`, 'Restore the record from the authoritative source and audit what changed and when.', { deterministic: true }));
-  const freshness = expired ? 0 : ageDays === undefined ? 35 : Math.max(0, Math.round(100 - ageDays / 3.65));
+  const freshness = expired ? 0 : ageDays === undefined ? 35 : Math.max(0, Math.round(100 - (ageDays / (policy.ttlDays + policy.graceDays)) * 100));
   return {
     findings,
     assessment: {
@@ -738,22 +806,28 @@ function assessRecord(record: MemoryRecord, privacyMode: PrivacyMode, now: numbe
       corroboration: 25,
       sensitivity: secrets ? 100 : pii ? 75 : 0,
       poisonRisk: Math.min(100, poisonMatches * 45 + (poisonMatches && untrustedSource ? 20 : 0) + (invisibleUnicode ? 30 : 0) + (encodedHit ? 40 : 0)),
-      suggestedReviewAt: new Date(now + (record.type === 'working' ? 7 : record.type === 'episodic' ? 90 : 180) * 86_400_000).toISOString(),
-      suggestedTtlDays: record.type === 'working' ? 7 : record.type === 'episodic' ? 90 : 180
+      suggestedReviewAt: policy.reviewDueAt,
+      suggestedTtlDays: policy.ttlDays
     }
   };
 }
 
-function assess(records: MemoryRecord[], privacyMode: PrivacyMode, cache?: AssessmentCache): { findings: Finding[]; assessments: TrustAssessment[] } {
+function assess(records: MemoryRecord[], privacyMode: PrivacyMode, cache: AssessmentCache | undefined, options: AuditOptions = {}): { findings: Finding[]; assessments: TrustAssessment[] } {
   const findings: Finding[] = [];
   const now = Date.now();
+  const piiPatterns = piiPatternsFor(options.piiLocales, options.organizationTerms);
   const hashes = new Map<string, MemoryRecord[]>();
-  const entities = new Map<string, Array<{ record: MemoryRecord; value: string }>>();
+  const entities = new Map<string, EntityFact[]>();
   const tokenized = records.map((record) => tokens(record.content));
 
   records.forEach((record) => {
     const same = hashes.get(record.contentHash) ?? []; same.push(record); hashes.set(record.contentHash, same);
-    const pair = entityValue(record.content); if (pair) { const list = entities.get(pair.entity) ?? []; list.push({ record, value: pair.value }); entities.set(pair.entity, list); }
+    const pair = entityValue(record.content);
+    if (pair) {
+      const list = entities.get(pair.entity) ?? [];
+      list.push({ record, value: pair.value, ...factWindow(record) });
+      entities.set(pair.entity, list);
+    }
   });
 
   for (const group of hashes.values()) if (group.length > 1) {
@@ -766,20 +840,41 @@ function assess(records: MemoryRecord[], privacyMode: PrivacyMode, cache?: Asses
     if (similarity >= 0.88) findings.push(finding('AS-ME-002', 'Near-duplicate memory', 'Two records carry substantially similar content.', 'low', records[b]!,
       `${Math.round(similarity * 100)}% similar to ${records[a]!.memoryId}`, 'Review both records and retain the freshest authoritative version.', { relatedMemoryId: records[a]!.memoryId, similarity }));
   }
-  for (const [entity, values] of entities) {
-    const distinct = new Set(values.map((item) => item.value));
-    if (distinct.size > 1) for (const item of values.slice(1)) findings.push(finding('AS-ME-003', 'Conflicting memory values', `Records disagree about “${entity}”.`, 'high', item.record,
-      `${entity}: ${applyPrivacy(item.value, privacyMode)}`, 'Review both records, prefer the fresher authoritative source, and quarantine the superseded value.',
-      { entity, relatedMemoryIds: values.filter((other) => other.record.memoryId !== item.record.memoryId).map((other) => other.record.memoryId) }));
+
+  // Conflict requires different values AND overlapping validity windows; a newer fact for the same
+  // entity supersedes an older one, which also suppresses the stale finding for the old record.
+  const supersededBy = new Map<string, string>();
+  for (const [entity, facts] of entities) {
+    const distinct = new Set(facts.map((item) => item.value));
+    if (distinct.size > 1) {
+      for (let index = 0; index < facts.length; index++) {
+        const current = facts[index]!;
+        const conflicting = facts.slice(0, index).some((other) =>
+          other.value !== current.value && windowsOverlap(other, current));
+        if (!conflicting) continue;
+        findings.push(finding('AS-ME-003', 'Conflicting memory values', `Records disagree about “${entity}”.`, 'high', current.record,
+          `${entity}: ${applyPrivacy(current.value, privacyMode, piiPatterns)}`, 'Review both records, prefer the fresher authoritative source, and quarantine the superseded value.',
+          { entity, relatedMemoryIds: facts.filter((other) => other.record.memoryId !== current.record.memoryId && other.value !== current.value).map((other) => other.record.memoryId) }));
+      }
+    }
+    const newest = [...facts].sort((a, b) => b.from - a.from)[0];
+    if (!newest) continue;
+    for (const fact of facts) {
+      if (fact !== newest && fact.value !== newest.value && windowsOverlap(fact, newest)) supersededBy.set(fact.record.memoryId, newest.record.memoryId);
+    }
   }
 
   const assessments = records.map((record): TrustAssessment => {
     let result = cache?.get(record);
     if (!result) {
-      result = assessRecord(record, privacyMode, now);
+      result = assessRecord(record, privacyMode, now, options);
       cache?.put(record, result);
     }
-    findings.push(...result.findings);
+    const supersededByRecord = supersededBy.get(record.memoryId);
+    const recordFindings = supersededByRecord
+      ? result.findings.filter((item) => !(item.ruleId === 'AS-ME-005'))
+      : result.findings;
+    findings.push(...recordFindings);
     return {
       ...result.assessment,
       corroboration: (hashes.get(record.contentHash)?.length ?? 0) > 1 ? 75 : 25
@@ -801,7 +896,7 @@ async function readQuarantine(target: string): Promise<QuarantineFile> {
 export async function auditMemory(target: string, options: AuditOptions = {}): Promise<MemoryAuditReport> {
   const startedAt = new Date().toISOString();
   const privacyMode = options.privacyMode ?? 'pii-secrets';
-  const adapter = createMemoryAdapter(target, options);
+  const adapter = await createAdapterForTarget(target, options);
   const loaded = await loadFromAdapter(adapter, options.pageSize);
   const quarantine = await readQuarantine(target);
   const quarantined = new Set(quarantine.entries.filter((item) => item.status === 'quarantined').map((item) => item.memoryId));
@@ -811,7 +906,7 @@ export async function auditMemory(target: string, options: AuditOptions = {}): P
     .sort()
     .join('\n'));
   const cache = options.cache === false ? undefined : await createAssessmentCache(target, adapter.id, privacyMode);
-  const result = assess(records, privacyMode, cache);
+  const result = assess(records, privacyMode, cache, options);
   if (cache) {
     try { await cache.save(); }
     catch { cache.stats.enabled = false; cache.stats.entries = 0; }
@@ -888,3 +983,4 @@ export {
   listRemediationPlans, getRemediationPlan,
   type RemediationPlan, type RemediationState, type RemediationAction, type RemediationStage, type PlanOptions
 } from './remediation.js';
+export { createPgDriver, createPostgresAdapter, type PostgresDriver } from './postgres.js';

@@ -1,5 +1,5 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { Command } from 'commander';
 import {
   VERSION, memoryAuditReportSchema, safeJson, scanReportSchema, severityRank,
@@ -8,12 +8,16 @@ import {
 import {
   addBaselineSuppressions, createBaseline, diffReports, evaluatePolicy, getRule, loadBaseline,
   loadPolicy, pruneExpiredSuppressions, saveBaseline, scanTarget, simulatePolicy, staticRules,
-  validateBaseline
+  validateBaseline, type StaticRule
 } from '@agentshield/scanner';
 import { renderAgentBom, renderHtml, renderMemoryAgentBom, renderMemoryEvidenceBundle, renderMemoryHtml, renderMemorySarif, renderSarif } from '@agentshield/reports';
 import { auditMemory, classifyMemoryTypes, getMemoryRule, listQuarantine, memoryRules, quarantineMemory, reconcileMemoryInventory, restoreMemory, type AuditOptions,
   planRemediation, approveRemediation, executeRemediation, rollbackRemediation, rejectRemediation, listRemediationPlans, getRemediationPlan } from '@agentshield/memory';
 import { EventStore, buildEvidenceGraph, createRuntimeEvent } from '@agentshield/runtime';
+import {
+  buildRulepack, deserializeRules, generateRulepackKeyPair, installRulepack, loadRulepackBundle,
+  loadRulepackState, rollbackRulepack, verifyRulepack
+} from '@agentshield/rulepack';
 import {
   DEFAULT_CONSENT_PATH, appendConsentEvent, buildTelemetryDataPreview, consentState, readConsent
 } from './telemetry.js';
@@ -89,10 +93,20 @@ function shouldFail(report: ScanReport, threshold?: Severity): boolean {
   return report.findings.some((item) => item.status === 'open' && severityRank[item.severity] >= severityRank[threshold]);
 }
 
-interface ScanCommandOptions { format: ScanFormat; output?: string; failOn?: Severity; baseline?: string; policy?: string; ci?: boolean }
+interface ScanCommandOptions { format: ScanFormat; output?: string; failOn?: Severity; baseline?: string; policy?: string; ci?: boolean; rulepack?: string; rulepackKey?: string }
 async function executeScan(target: string, options: ScanCommandOptions): Promise<ScanReport> {
   const baseline = options.baseline ? await loadBaseline(options.baseline) : undefined;
-  const report = await scanTarget(target, { baseline });
+  let rules: StaticRule[] | undefined;
+  if (options.rulepack) {
+    if (!options.rulepackKey) throw new Error('--rulepack requires --rulepack-key <public.pem>');
+    const publicKeyPem = await readFile(resolve(options.rulepackKey), 'utf8');
+    const bundle = await loadRulepackBundle(resolve(options.rulepack));
+    const verification = verifyRulepack(bundle, publicKeyPem);
+    if (!verification.valid) throw new Error(`Rulepack rejected: ${verification.reasons.join('; ')}`);
+    rules = deserializeRules(bundle.rules);
+    console.error(`Using verified rulepack ${bundle.manifest.id} ${bundle.manifest.version} by ${bundle.manifest.publisher}`);
+  }
+  const report = await scanTarget(target, { baseline, rules });
   await emit(renderScan(report, options.format), options.output);
   if (options.policy) {
     const decision = evaluatePolicy(report, await loadPolicy(options.policy));
@@ -113,6 +127,8 @@ function addScanOptions(command: Command): Command {
     .option('--fail-on <severity>', 'exit 2 at or above: low, medium, high, critical')
     .option('--baseline <path>', 'reviewed finding baseline')
     .option('--policy <path>', 'YAML policy file')
+    .option('--rulepack <file>', 'scan with a verified signed rulepack bundle')
+    .option('--rulepack-key <public.pem>', 'publisher public key required with --rulepack')
     .option('--ci', 'non-interactive CI defaults');
 }
 
@@ -146,6 +162,65 @@ async function loadOrScan(path: string): Promise<ScanReport> {
   }
   return scanTarget(path);
 }
+
+const rulepack = program.command('rulepack').description('Build, verify, install, update, and roll back signed rulepacks');
+rulepack.command('keygen').description('Generate an ed25519 publisher key pair')
+  .option('--dir <path>', 'output directory', '.agentshield/keys')
+  .action(async (options) => {
+    const keys = generateRulepackKeyPair();
+    const directory = resolve(options.dir);
+    await mkdir(directory, { recursive: true });
+    const privatePath = join(directory, 'agentshield-rulepack-private.pem');
+    const publicPath = join(directory, 'agentshield-rulepack-public.pem');
+    await writeFile(privatePath, keys.privateKeyPem, 'utf8');
+    await writeFile(publicPath, keys.publicKeyPem, 'utf8');
+    await emit(`Wrote private key to ${privatePath}\nWrote public key to ${publicPath}\nKeep the private key offline; distribute only the public key.`);
+  });
+rulepack.command('build <version> <publisher>').description('Build and sign a rulepack bundle from the built-in deterministic rules')
+  .requiredOption('--key <private.pem>').requiredOption('-o, --output <path>')
+  .action(async (version, publisher, options) => {
+    const privateKeyPem = await readFile(resolve(options.key), 'utf8');
+    const bundle = buildRulepack({ version, publisher, privateKeyPem });
+    await emit(JSON.stringify(bundle, null, 2), options.output);
+  });
+rulepack.command('verify <bundle>').description('Verify the signature, publisher binding, and rule digest').requiredOption('--key <public.pem>')
+  .option('--json', 'JSON output')
+  .action(async (bundlePath, options) => {
+    const publicKeyPem = await readFile(resolve(options.key), 'utf8');
+    const bundle = await loadRulepackBundle(resolve(bundlePath));
+    const verification = verifyRulepack(bundle, publicKeyPem);
+    await emit(options.json ? safeJson(verification) : [
+      verification.valid ? 'Signature: VALID' : 'Signature: INVALID',
+      `Bundle: ${bundle.manifest.id} ${bundle.manifest.version}`, `Publisher: ${bundle.manifest.publisher}`,
+      `Rules: ${bundle.manifest.ruleCount}`, ...verification.reasons.map((reason) => `- ${reason}`)
+    ].join('\n'));
+    if (!verification.valid) process.exitCode = 1;
+  });
+rulepack.command('install <bundle>').description('Verify against the publisher key and record as the current rulepack (update)')
+  .requiredOption('--key <public.pem>').option('--store <dir>', 'local state directory', '.agentshield')
+  .action(async (bundlePath, options) => {
+    const publicKeyPem = await readFile(resolve(options.key), 'utf8');
+    const bundle = await loadRulepackBundle(resolve(bundlePath));
+    const result = await installRulepack(bundle, publicKeyPem, resolve(options.store));
+    if (!result.verification.valid) throw new Error(`Rulepack rejected: ${result.verification.reasons.join('; ')}`);
+    await emit(`Installed rulepack ${bundle.manifest.version} by ${bundle.manifest.publisher}\nCurrent: ${result.state.current}`);
+  });
+rulepack.command('list').description('List installed rulepacks and the current version')
+  .option('--store <dir>', 'local state directory', '.agentshield').option('--json', 'JSON output')
+  .action(async (options) => {
+    const state = await loadRulepackState(resolve(options.store));
+    await emit(options.json ? safeJson(state) : [
+      `Current: ${state.current || '(none installed)'}`, ...state.installed.map((item) =>
+        `${item.version}${item.version === state.current ? '  [current]' : ''}  ${item.publisher}  installed ${item.installedAt}`)
+    ].join('\n'));
+  });
+rulepack.command('rollback').description('Switch to the highest installed version below the current one')
+  .option('--store <dir>', 'local state directory', '.agentshield')
+  .action(async (options) => {
+    const result = await rollbackRulepack(resolve(options.store));
+    if (!result.previous) throw new Error('Nothing to roll back to');
+    await emit(`Rolled back to ${result.previous}`);
+  });
 
 const policy = program.command('policy').description('Evaluate policy-as-code');
 policy.command('check <report> <policy>').description('Evaluate a JSON scan report against YAML policy').option('--json', 'JSON output')

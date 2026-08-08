@@ -2,6 +2,7 @@ import { extname } from 'node:path';
 import * as ts from 'typescript';
 import YAML from 'yaml';
 import { parse as parseToml } from 'smol-toml';
+import { parsePython } from './python.js';
 
 export type ParserMode = 'ast' | 'structured' | 'conservative';
 export type SourceLanguage =
@@ -78,6 +79,18 @@ export interface ToolDefinition {
   destructive: boolean;
   approvalDeclared: boolean;
   location: SourceLocation;
+  /** Name of the MCP server the tool belongs to, when the configuration nests it. */
+  server?: string;
+  /** Property names of the declared input schema, when present. */
+  schemaProperties?: string[];
+  /** `annotations.readOnlyHint` or a top-level `readOnlyHint` flag. */
+  readOnlyHint?: boolean;
+  /** `annotations.destructiveHint` or a top-level `destructiveHint` flag. */
+  destructiveHint?: boolean;
+  /** Reference to the handler implementation (path, module, or identifier). */
+  handler?: string;
+  /** Declared permissions inherited from the server or attached to the tool. */
+  permissions?: string[];
 }
 
 export interface MarkdownStructure {
@@ -128,7 +141,8 @@ export function parseSource(path: string, rawContent: string): ParsedFile {
     if (language === 'javascript' || language === 'typescript') return parseJavaScript(path, content, language);
     if (language === 'json' || language === 'jsonl' || language === 'yaml' || language === 'toml') return parseConfiguration(path, content, language);
     if (language === 'markdown') return parseMarkdown(path, content);
-    if (language === 'python' || language === 'shell' || language === 'powershell') return parseConservativeScript(path, content, language);
+    if (language === 'python') return parsePython(path, content);
+    if (language === 'shell' || language === 'powershell') return parseConservativeScript(path, content, language);
     return emptyFile(path, language, 'conservative');
   } catch (error) {
     const failed = emptyFile(path, language, 'conservative');
@@ -407,25 +421,85 @@ function parseConfiguration(path: string, content: string, language: 'json' | 'j
   return result;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+function pickString(object: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = object[key];
+    if (typeof value === 'string' && value.trim()) return value;
+  }
+  return;
+}
+
+/**
+ * Normalizes MCP servers, tools, input schemas, annotations, declared side effects, and handler
+ * references from a structured configuration file. Tools are reported with their server context so
+ * the scanner can compare a destructive implementation against the read-only declaration.
+ */
 function extractConfiguration(value: unknown, content: string, result: ParsedFile): void {
   const serverNames = new Set<string>();
-  function walk(node: unknown, key = '', path: string[] = []): void {
-    if (Array.isArray(node)) { node.forEach((item, index) => walk(item, String(index), [...path, key])); return; }
+  function walk(node: unknown, key = '', path: string[] = [], server = ''): void {
+    if (Array.isArray(node)) { node.forEach((item, index) => walk(item, String(index), [...path, key], server)); return; }
     if (!node || typeof node !== 'object') return;
     const object = node as Record<string, unknown>;
-    if (key === 'mcpServers') for (const server of Object.keys(object)) serverNames.add(server);
+    if (key === 'mcpServers') {
+      for (const name of Object.keys(object)) {
+        serverNames.add(name);
+        walk(object[name], name, [...path, key], name);
+      }
+      return;
+    }
     const name = typeof object.name === 'string' ? object.name : undefined;
     const description = typeof object.description === 'string' ? object.description : undefined;
     if (name && (path.includes('tools') || key === 'tool' || 'inputSchema' in object || 'input_schema' in object)) {
-      const destructive = /(?:delete|remove|drop|terminate|send|publish|write|update)/i.test(`${name} ${description ?? ''}`);
-      const approvalDeclared = object.requiresApproval === true || object.require_approval === true || /(?:approval|required|confirm)/i.test(description ?? '');
+      const annotations = isRecord(object.annotations) ? object.annotations : {};
+      const readOnlyHint = annotations.readOnlyHint === true || object.readOnlyHint === true;
+      const destructiveHint = annotations.destructiveHint === true || object.destructiveHint === true;
+      const schema = isRecord(object.inputSchema) ? object.inputSchema : isRecord(object.input_schema) ? object.input_schema : undefined;
+      const schemaProperties = schema && isRecord(schema.properties) ? Object.keys(schema.properties) : [];
+      const handler = pickString(object, ['handler', 'implementation', 'script', 'module', 'entry']);
+      const destructive = destructiveHint || /(?:delete|remove|drop|terminate|send|publish|write|update)/i.test(`${name} ${description ?? ''}`);
+      const approvalDeclared = object.requiresApproval === true || object.require_approval === true ||
+        annotations.requiresApproval === true || annotations.approvalRequired === true ||
+        /(?:approval|required|confirm)/i.test(description ?? '');
       const index = Math.max(0, content.indexOf(name));
-      result.tools.push({ name, description, destructive, approvalDeclared, location: locationAt(content, index) });
+      result.tools.push({
+        name,
+        description,
+        destructive,
+        approvalDeclared,
+        location: locationAt(content, index),
+        ...(server ? { server } : {}),
+        ...(schemaProperties.length ? { schemaProperties } : {}),
+        readOnlyHint,
+        destructiveHint,
+        ...(handler ? { handler } : {}),
+        ...(stringArray(object.permissions).length ? { permissions: stringArray(object.permissions) } : {})
+      });
     }
-    for (const [childKey, child] of Object.entries(object)) walk(child, childKey, [...path, key].filter(Boolean));
+    for (const [childKey, child] of Object.entries(object)) walk(child, childKey, [...path, key].filter(Boolean), server);
   }
   walk(value);
-  if (serverNames.size) result.metadata.mcpServers = [...serverNames];
+  if (serverNames.size) {
+    result.metadata.mcpServers = [...serverNames];
+    const servers = isRecord(value) ? value.mcpServers : undefined;
+    if (isRecord(servers)) {
+      for (const [name, server] of Object.entries(servers)) {
+        if (!isRecord(server)) continue;
+        const permissions = stringArray(server.permissions);
+        if (!permissions.length) continue;
+        for (const tool of result.tools) {
+          if (tool.server === name && !tool.permissions) tool.permissions = permissions;
+        }
+      }
+    }
+  }
 }
 
 function parseMarkdown(path: string, content: string): ParsedFile {

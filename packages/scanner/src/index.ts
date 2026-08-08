@@ -6,7 +6,7 @@ import {
   scanReportSchema, sha256, severityRank, type Component, type Finding, type Permission,
   type RiskDimensions, type ScanReport, type Severity
 } from '@agentshield/core';
-import { normalizeByteOrderMark, parseSource, type OperationKind, type ParsedFile, type SourceLocation } from '@agentshield/parsers';
+import { normalizeByteOrderMark, parseSource, type OperationKind, type ParsedFile, type SourceLocation, type ToolDefinition } from '@agentshield/parsers';
 import { staticRules, type StaticRule } from './rules.js';
 import { validateBaseline, type Baseline } from './baseline.js';
 import { archiveFormatForPath, inspectArchive, type ArchiveLimits } from './archive.js';
@@ -45,6 +45,8 @@ export interface ScanOptions {
   maxFileBytes?: number;
   maxArchiveBytes?: number;
   archiveLimits?: Partial<ArchiveLimits>;
+  /** Verified rulepack rules; defaults to the built-in deterministic rulepack. */
+  rules?: StaticRule[];
 }
 
 async function buildIgnore(root: string): Promise<Ignore> {
@@ -138,10 +140,10 @@ function makeFinding(rule: StaticRule, path: string, content: string, match: Reg
   };
 }
 
-function scanRules(path: string, content: string): Finding[] {
+function scanRules(path: string, content: string, rules: StaticRule[]): Finding[] {
   const extension = extname(path).toLowerCase();
   const findings: Finding[] = [];
-  for (const rule of staticRules) {
+  for (const rule of rules) {
     if (rule.extensions && !rule.extensions.includes(extension)) continue;
     for (const pattern of rule.patterns) {
       const flags = pattern.flags.replace('g', '');
@@ -195,11 +197,95 @@ function structuredToolFindings(path: string, content: string, parsed: ParsedFil
       id: fingerprint('AS-SC-024', path, excerpt), ruleId: 'AS-SC-024', title: 'MCP tool has undeclared destructive side effects',
       description: `Structured tool definition “${tool.name}” suggests mutation or an external side effect without an approval declaration.`,
       severity: 'high' as const, confidence: 'high' as const, category: 'mcp',
-      evidence: [{ path, line: tool.location.line, column: tool.location.column, excerpt, redacted: false }],
+      evidence: [{ path: normalizePath(path), line: tool.location.line, column: tool.location.column, excerpt, redacted: false }],
       remediation: 'Declare side effects explicitly and require confirmation or policy approval before execution.',
       status: 'open' as const, metadata: { analysis: 'structured-config', toolName: tool.name }
     };
   });
+}
+
+const DESTRUCTIVE_OPERATION_KINDS: ReadonlySet<OperationKind> = new Set([
+  'filesystem.delete', 'filesystem.write', 'process.execute', 'messaging.send'
+]);
+
+interface MCPToolRecord {
+  tool: ToolDefinition;
+  configPath: string;
+  content: string;
+}
+
+/** Resolves a handler reference to a path relative to the configuration file, when it is local. */
+function resolveHandlerPath(handler: string, configPath: string): string | undefined {
+  let candidate = handler.replace(/^\.\//, '').split(/[?#]/)[0]!;
+  candidate = candidate.replaceAll('\\', '/');
+  if (!candidate) return undefined;
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(candidate)) return undefined; // URLs and other schemes
+  if (candidate.includes('node_modules/')) return undefined;
+  const directory = configPath.includes('/') ? configPath.slice(0, configPath.lastIndexOf('/') + 1) : '';
+  return normalizePath(directory + candidate);
+}
+
+function isReadOnlyDescription(description: string | undefined): boolean {
+  if (!description) return false;
+  const readOnly = /\b(?:read|get|list|search|lookup|fetch|query|inspect|retrieve|view|show|display|peek|find)\b/i.test(description);
+  const destructive = /\b(?:delete|remove|drop|terminate|write|update|send|publish|create|execute|modify)\b/i.test(description);
+  return readOnly && !destructive;
+}
+
+function readOnlyPermissions(permissions: string[] | undefined): boolean {
+  if (!permissions || !permissions.length) return false;
+  return permissions.every((permission) => /read|list|get|query|search|lookup/i.test(permission)) &&
+    !permissions.some((permission) => /delete|write|update|execute|send|create|drop|remove|modify/i.test(permission));
+}
+
+/**
+ * Compares declared tool side effects against the operations of the referenced handler. A tool that
+ * declares read-only or narrowly scoped behavior but whose implementation performs destructive
+ * operations is evidence of misleading MCP metadata, not just a misdeclared permission.
+ */
+function mcpImplementationFindings(
+  records: MCPToolRecord[],
+  scanned: Map<string, { parsed: ParsedFile; content: string }>
+): Finding[] {
+  const findings: Finding[] = [];
+  for (const record of records) {
+    const { tool, configPath, content } = record;
+    if (!tool.handler) continue;
+    const handlerPath = resolveHandlerPath(tool.handler, configPath);
+    if (!handlerPath) continue;
+    let target: { parsed: ParsedFile; content: string } | undefined;
+    for (const [path, entry] of scanned) {
+      const normalized = normalizePath(path);
+      if (normalized === handlerPath || normalized.endsWith(`/${handlerPath}`)) { target = entry; break; }
+    }
+    if (!target) continue;
+    const destructiveOps = target.parsed.operations.filter((operation) => DESTRUCTIVE_OPERATION_KINDS.has(operation.kind));
+    if (!destructiveOps.length) continue;
+    const declaredReadOnly = tool.readOnlyHint === true || isReadOnlyDescription(tool.description);
+    const scopedReadOnly = readOnlyPermissions(tool.permissions);
+    if (!declaredReadOnly && !scopedReadOnly) continue;
+    const operationKinds = [...new Set(destructiveOps.map((operation) => operation.kind))];
+    const sourceLine = content.split(/\r?\n/)[tool.location.line - 1] ?? tool.name;
+    findings.push({
+      id: fingerprint('AS-SC-027', configPath, `${tool.name}->${handlerPath}`),
+      ruleId: 'AS-SC-027', title: 'MCP tool implementation exceeds declared read-only scope',
+      description: `MCP tool “${tool.name}” declares read-only or narrowly scoped behavior, but its handler (${handlerPath}) performs destructive operations (${operationKinds.join(', ')}).`,
+      severity: 'high' as const, confidence: 'high' as const, category: 'mcp',
+      evidence: [
+        { path: normalizePath(configPath), line: tool.location.line, column: tool.location.column, excerpt: maskEvidence(sourceLine), redacted: false },
+        ...destructiveOps.slice(0, 3).map((operation) => {
+          const line = target.content.split(/\r?\n/)[operation.location.line - 1] ?? operation.symbol;
+          return { path: normalizePath(handlerPath), line: operation.location.line, column: operation.location.column, excerpt: maskEvidence(line), redacted: false };
+        })
+      ],
+      remediation: 'Make the tool declaration match its implementation: keep read-only handlers free of destructive operations or declare the side effects and require policy approval.',
+      status: 'open' as const, metadata: {
+        analysis: 'mcp-declaration-vs-implementation', toolName: tool.name, handler: handlerPath,
+        operations: operationKinds, permissionMismatch: scopedReadOnly && !declaredReadOnly
+      }
+    });
+  }
+  return findings;
 }
 
 const PERMISSION_PATTERNS: Array<{ re: RegExp; resource: string; action: string; risk: Severity }> = [
@@ -336,6 +422,8 @@ export async function scanTarget(target: string, options: ScanOptions = {}): Pro
   let findings: Finding[] = errors.map((error) => incompleteFinding(error.split(':', 1)[0] || normalizePath(target), error, undefined, 'DISCOVERY_GAP'));
   let permissions: Permission[] = [];
   const components: Component[] = [];
+  const scanned = new Map<string, { parsed: ParsedFile; content: string }>();
+  const mcpTools: MCPToolRecord[] = [];
   for (const file of files) {
     let content: string;
     try {
@@ -353,8 +441,12 @@ export async function scanTarget(target: string, options: ScanOptions = {}): Pro
     // hidden control character, while the component hash below still covers the real file content.
     const analyzed = normalizeByteOrderMark(content);
     const parsed = parseSource(file.relative, analyzed);
+    scanned.set(file.relative, { parsed, content: analyzed });
+    if (parsed.tools.length) {
+      for (const tool of parsed.tools) mcpTools.push({ tool, configPath: file.relative, content: analyzed });
+    }
     findings.push(...structuredToolFindings(file.relative, analyzed, parsed));
-    findings.push(...scanRules(file.relative, analyzed));
+    findings.push(...scanRules(file.relative, analyzed, options.rules ?? staticRules));
     const chain = secretNetworkChain(file.relative, analyzed, parsed);
     if (chain) findings.push(chain);
     permissions.push(...mapPermissions(file.relative, analyzed, parsed));
@@ -373,6 +465,8 @@ export async function scanTarget(target: string, options: ScanOptions = {}): Pro
       ...(provenance ? { provenance } : {})
     });
   }
+  findings = dedupeFindings(findings);
+  findings.push(...mcpImplementationFindings(mcpTools, scanned));
   findings = dedupeFindings(findings);
   permissions = dedupePermissions(permissions);
   const now = Date.now();

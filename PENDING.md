@@ -47,35 +47,44 @@ Terakhir diperbarui: 2026-08-08.
 
 - [x] JavaScript/TypeScript sudah memakai AST dan common intermediate representation untuk imports,
   calls, operations, permissions, serta intra-file data flow.
-- [~] Python dan shell sudah menghasilkan conservative operation IR serta analysis-gap finding,
-  tetapi belum memakai AST.
+- [x] Python memakai AST parser murni TypeScript (tokenizer indentation + f-string, parser recursive
+  descent) yang menghasilkan IR dan intra-file data flow yang sama dengan JS/TS; shell dan
+  PowerShell masih conservative.
 - [x] JSON, JSONL, YAML, dan TOML sudah diparse secara struktural dengan diagnostics.
 - [x] Markdown sudah memparse front matter, link, command, code block, hidden HTML instruction, dan
   invisible Unicode.
-- [~] Rule `AS-SC-001` membuktikan intra-file identifier flow untuk JavaScript/TypeScript; Python dan
-  shell masih memakai taint-lite fallback dan inter-file flow belum tersedia.
-- [~] MCP tool mismatch hanya heuristic teks; belum membandingkan tool schema, declared permissions,
-  dan implementasi handler.
+- [x] Rule `AS-SC-001` membuktikan intra-file identifier flow untuk JavaScript/TypeScript dan Python
+  (`os.getenv`/`os.environ` → `requests`/`urllib`/f-string), termasuk alias import dan receiver
+  chain; shell masih memakai taint-lite fallback dan inter-file flow belum tersedia.
+- [x] MCP tool mismatch sudah membandingkan tool schema, `annotations` (read-only/destructive hint),
+  declared permissions, dan implementasi handler (`AS-SC-027`). Tool yang mendeklarasikan read-only
+  tetapi handler-nya melakukan operasi destruktif dilaporkan dengan evidence dari kedua file.
 - [~] Discovery sudah menghormati `.gitignore`/`.agentshieldignore`, direct archive target, serta
   package metadata dan lockfile provenance (`package.json`, `pyproject.toml`, npm/pnpm lockfile);
   Git ref, container digest, dan signature verification belum tersedia.
 - [x] Direct `.zip`, `.whl`, `.tar`, dan `.tar.gz`/`.tgz` dipindai in-memory dengan proteksi archive
   bomb, path traversal, tar checksum, serta penolakan hard link/symlink. Nested archive belum dibuka.
-- [ ] Rulepack manifest bertanda tangan, updater, rollback rulepack, dan verifikasi publisher.
+- [x] Rulepack manifest bertanda tangan ed25519, updater lokal, rollback rulepack, dan verifikasi
+  publisher (`agentshield rulepack keygen|build|verify|install|list|rollback`, package
+  `@agentshield/rulepack`). Signature mengikat manifest canonical, digest SHA-256 mengikat rules,
+  dan `scan --rulepack --rulepack-key` menjalankan rule set terverifikasi.
 - [ ] Optional sandboxed dynamic analysis.
 
 ### Cara mengimplementasikan
 
 1. [x] Tambahkan package `packages/parsers` dan common intermediate representation:
    `FileNode`, `CallNode`, `DataSource`, `DataSink`, `ToolDefinition`, serta `ParseDiagnostic`.
-2. [~] Gunakan TypeScript Compiler API untuk JS/TS, Python worker terisolasi berbasis `ast`, parser shell
-   yang tidak mengeksekusi input, `remark` untuk Markdown, serta parser JSON/YAML/TOML yang strict.
+2. [x] Gunakan TypeScript Compiler API untuk JS/TS, parser Python murni TypeScript di
+   `packages/parsers/src/python.ts` (tanpa runtime Python eksternal, konsisten dengan ADR-001),
+   parser shell yang tidak mengeksekusi input, `remark` untuk Markdown, serta parser JSON/YAML/TOML
+   yang strict.
 3. [~] Ubah rule engine agar rule menerima IR, bukan raw text. Permission mapping dan rules tertentu
    sudah memakai IR; regex tetap dipakai sebagai conservative
    fallback dan setiap fallback harus menurunkan confidence atau menghasilkan analysis gap.
-4. [~] Bangun intra-file data flow untuk source `process.env`, credential files, dan secret manager output
-   menuju sink `fetch`, HTTP clients, messaging, logs, atau child process.
-5. Untuk MCP, normalkan server, tools, input schema, annotations, declared side effects, dan handler
+4. [x] Bangun intra-file data flow untuk source `process.env`/`os.getenv`/`os.environ`, credential
+   files, dan secret manager output menuju sink `fetch`, HTTP clients, messaging, logs, atau child
+   process, untuk JavaScript/TypeScript dan Python.
+5. [x] Untuk MCP, normalkan server, tools, input schema, annotations, declared side effects, dan handler
    references. Bandingkan destructive implementation dengan description/approval declaration.
 6. [~] Package name, declared/resolved version, repository URL, lockfile resolution, integrity hash,
    serta unpinned/remote dependency sudah masuk `Component.provenance`. Container digest dan signature
@@ -126,7 +135,8 @@ Terakhir diperbarui: 2026-08-08.
 - [~] Policy v2 mendukung typed predicates, nested boolean expression, scope metadata,
   deterministic trace, dan multi-report simulator; persisted version history serta exception
   approval belum ada.
-- [ ] Signed rulepack update command dan offline rulepack bundle.
+- [x] Signed rulepack update command dan offline rulepack bundle (`rulepack build/install/rollback`
+  dan file bundle `.rulepack.json` tunggal).
 - [x] Telemetry opt-in command, consent receipt, dan data preview (`agentshield telemetry
   status|enable|disable|preview`). Default tetap off dan tidak ada transmisi di edisi Community.
 - [ ] npm release pipeline, changelog automation, artifact signing, checksum, SBOM, dan provenance
@@ -155,7 +165,10 @@ Terakhir diperbarui: 2026-08-08.
   pagination, checkpoint, connection test, dan read-only audit surface.
 - [x] Per-record incremental cache memakai adapter ID, external ID, content/record fingerprint,
   detector version, privacy mode, serta freshness bucket; detector relasional tetap dihitung ulang.
-- [ ] Generic PostgreSQL read-only adapter.
+- [x] Generic PostgreSQL read-only adapter (`packages/memory/src/postgres.ts`): keyset pagination,
+  `BEGIN TRANSACTION READ ONLY` + `statement_timeout` di setiap operasi, inferensi kolom, driver
+  `pg` lazy-import opsional, dan conformance suite dengan in-memory driver yang menolak statement
+  write.
 - [ ] Satu vector database adapter pertama; keputusan produk masih diperlukan.
 - [~] Pagination, checkpoint, dan JSONL per-record failure isolation sudah formal; retry serta rate
   limit untuk connector eksternal belum ada.
@@ -182,16 +195,21 @@ Terakhir diperbarui: 2026-08-08.
 - [ ] Repeated scan hanya menghitung ulang record yang berubah.
 - [ ] Satu record rusak tidak menggagalkan seluruh audit.
 - [ ] Inventory totals cocok dengan source store dalam documented exclusions.
-- [ ] Tidak ada write query yang dapat dijalankan saat audit mode.
+- [x] Tidak ada write query yang dapat dijalankan saat audit mode (conformance suite membuktikan
+  adapter audit tidak mengekspos mutation method dan driver menolak statement non-SELECT).
 - [ ] Raw memory tidak masuk log atau cloud event secara default.
 
 ## 5. Memory intelligence — P0/P1
 
 - [~] Near duplicate masih memakai token Jaccard, bukan embedding atau semantic similarity.
-- [~] Conflict detection hanya pola entity/attribute/value sederhana pada awal teks.
-- [~] Freshness memakai umur generik; belum mempertimbangkan volatility, source modified time,
-  memory type policy, atau authoritative replacement.
-- [~] PII detector masih terbatas dan belum mempunyai locale packs atau organization terms.
+- [x] Conflict detection membandingkan nilai per entity/attribute dan hanya menandai conflict bila
+  validity windows overlap (`AS-ME-003`); fakta yang tidak overlap tidak lagi salah dilaporkan.
+- [x] Freshness memakai policy per record: label `ttl:<n>` eksplisit, default per memory type
+  (working/episodic/semantic/procedural), grace period, dan eskalasi severity untuk source volatile
+  (web/email/dokumen). Fakta yang sudah disupersede oleh fakta lebih baru untuk entity yang sama
+  tidak lagi dilaporkan stale (`AS-ME-005`). Source modified time tetap belum dipakai.
+- [x] PII detector memakai locale packs `en-US` dan `id-ID` (SSN, NIK, NPWP, kartu, telepon) serta
+  organization terms yang bisa dikonfigurasi via `AuditOptions.organizationTerms` (`AS-ME-009`).
 - [~] Poison detector kini mendeteksi hidden Unicode (`AS-ME-012`) dan instruksi tersembunyi dalam
   encoding base64/HTML entity (`AS-ME-013`), sejajar dengan `AS-SC-026`; policy conflict, provenance
   mismatch, dan indirect tool instruction secara menyeluruh belum tersedia.
@@ -205,11 +223,11 @@ Terakhir diperbarui: 2026-08-08.
 1. Tambahkan detector interface versioned dan simpan detector version di assessment.
 2. Gunakan local embedding model atau configured embedding provider hanya setelah redaction/consent;
    simpan vector secara lokal dan gunakan threshold yang dikalibrasi dari corpus.
-3. Ekstrak EAV + temporal qualifier, kelompokkan per normalized entity/attribute, lalu pilih conflict
+3. [x] Ekstrak EAV + temporal qualifier, kelompokkan per normalized entity/attribute, lalu pilih conflict
    hanya jika value berbeda dan validity windows overlap.
-4. Buat freshness policy per label/type: volatility, default TTL, grace period, authoritative source,
+4. [x] Buat freshness policy per label/type: volatility, default TTL, grace period, authoritative source,
    serta review cadence.
-5. Tambahkan Unicode normalization, zero-width character detection, base64/HTML-hidden instruction
+5. [~] Tambahkan Unicode normalization, zero-width character detection, base64/HTML-hidden instruction
    analysis, dan policy-versus-memory comparison.
 6. LLM output hanya boleh menambah `assisted` finding; tidak boleh sendiri memblokir, menghapus, atau
    menulis ulang memory.

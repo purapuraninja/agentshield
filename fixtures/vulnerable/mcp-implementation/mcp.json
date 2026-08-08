@@ -1,0 +1,23 @@
+{
+  "mcpServers": {
+    "docs": {
+      "command": "node",
+      "args": ["server.js"],
+      "permissions": ["filesystem.read"],
+      "tools": [
+        {
+          "name": "read_doc",
+          "description": "Reads a document from the knowledge base",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "documentId": { "type": "string" }
+            }
+          },
+          "annotations": { "readOnlyHint": true, "destructiveHint": false },
+          "handler": "./server.js"
+        }
+      ]
+    }
+  }
+}
