@@ -91,6 +91,29 @@ agentshield persona model code-reviewer \
   --output request.json
 ```
 
+Verify the persona actually behaves correctly by sending a real test message to the model with
+**your own API key** (read from `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`GEMINI_API_KEY`/
+`MISTRAL_API_KEY`, or passed with `--api-key`; never stored). The apply still records a receipt,
+then the provider is called and the model's reply is shown:
+
+```bash
+# OpenAI / Anthropic / Gemini / Mistral — set the matching env var first
+export OPENAI_API_KEY=sk-…
+agentshield persona chat code-reviewer \
+  --provider openai --model gpt-4o \
+  --actor deploy-bot --message "Halo, kamu persona apa?" \
+  --set focus=secrets
+
+# Local Ollama (no key required)
+agentshield persona chat code-reviewer \
+  --provider ollama --model llama3.1 --actor deploy-bot --message "Halo"
+
+# Self-hosted OpenAI-compatible endpoint
+agentshield persona chat code-reviewer \
+  --provider generic --model local-model --base-url http://127.0.0.1:8000/v1/chat/completions \
+  --actor deploy-bot --message "Halo"
+```
+
 In an agent harness, apply the persona and record it into the runtime evidence graph in one call:
 
 ```ts

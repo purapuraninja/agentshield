@@ -391,3 +391,7 @@ export {
   buildModelRequest, MODEL_PROVIDERS, modelRequestOptionsSchema,
   type ModelProvider, type ModelRequestOptions, type ModelRequestResult
 } from './models.js';
+export {
+  chatWithModel, PROVIDER_ENV_KEYS,
+  type ChatCallOptions, type ChatResult
+} from './chat.js';

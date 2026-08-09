@@ -48,10 +48,12 @@ Read-only memory audit. \fB--format\fP terminal|json|html|sarif|agentbom|bundle.
 .B memory quarantine|restore <target> <memoryId>
 Reversibly quarantine or restore a memory record without deleting the source.
 .TP
-.B persona create|list|show|render|apply|verify|applications|remove
+.B persona create|create-text|list|show|render|apply|verify|applications|remove
 Define, validate, render, and apply agent personas with a verifiable, hash-chained audit trail.
-\fBpersona create <file.yaml> --actor <name>\fP registers a persona; \fBpersona render <id>\fP
-renders the system prompt with \fB--set name=value\fP overrides.
+\fBpersona create <file.yaml> --actor <name>\fP registers a structured persona;
+\fBpersona create-text <file.txt> --actor <name>\fP registers any raw text as a free-form persona
+(id and name are derived; no YAML required). \fBpersona render <id>\fP renders the system prompt
+with \fB--set name=value\fP overrides.
 .TP
 .B persona apply <id> \-\-actor <name>
 Apply a persona: render, inject, and record an immutable application receipt (raw prompt is never
@@ -63,6 +65,13 @@ Apply a persona and emit a provider-native AI model request (OpenAI messages, An
 Gemini systemInstruction, Mistral messages, Ollama messages + options, OpenAI Responses instructions,
 or generic) as JSON, including the application receipt. Sampling options:
 \fB--temperature\fP, \fB--max-tokens\fP, \fB--top-p\fP. No network call is made.
+.TP
+.B persona chat <id> \-\-provider <name> \-\-model <name> \-\-actor <name> \-\-message <text>
+Apply a persona and send a live test message to the model with the operator's own API key (from
+\fBOPENAI_API_KEY\fP/\fBANTHROPIC_API_KEY\fP/\fBGEMINI_API_KEY\fP/\fBMISTRAL_API_KEY\fP or
+\fB--api-key\fP; never persisted) and print the model's reply. \fB--base-url\fP is required for the
+generic provider; Ollama is local and needs no key. This is the only outbound call in the CLI and
+is explicit, opt-in, and operator-initiated.
 .TP
 .B runtime ingest|trace
 Ingest sanitized runtime events and build a source-to-action evidence graph.

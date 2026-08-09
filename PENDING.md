@@ -321,6 +321,13 @@ Terakhir diperbarui: 2026-08-09.
   apply persona dari store → build request provider-native → catat event `persona.applied` di gate
   (saat gate diberikan) — plus fixture aman kedua `fixtures/safe/personas/security-analyst.yaml` dan
   panduan CLI + SDK di `docs/operations/install.md`.
+- [x] Uji perilaku persona ke model nyata: `agentshield persona chat <id> --provider <name>
+  --model <name> --message <teks>` (package `@agentshield/persona/src/chat.ts`) — apply (mencatat
+  receipt) → build request → kirim pesan uji ke provider dengan **API key milik operator** (dari env
+  `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`GEMINI_API_KEY`/`MISTRAL_API_KEY` atau `--api-key`, tidak
+  pernah disimpan; `generic` butuh `--base-url`; Ollama lokal tanpa key) → tampilkan balasan model.
+  Timeout default 60 detik, error provider non-2xx diterjemahkan. Ini satu-satunya jalur yang
+  melakukan panggilan jaringan keluar — eksplisit dan opt-in.
 - [x] REST API `/v1/personas` (list/get/register dengan YAML `definitionText` atau objek
   `definition`, remove, apply, model-request dengan validasi sebelum receipt dicatat, applications +
   verifikasi chain) dan dashboard view "Personas" untuk registrasi, apply + build model request

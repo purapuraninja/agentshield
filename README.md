@@ -74,9 +74,11 @@ agentshield remediation plan <target> <memory-id> <quarantine|restore|deprecate>
 agentshield remediation approve|execute|rollback <target> <plan-id> --actor <name>
 
 agentshield persona create <file.yaml> --actor <name>
+agentshield persona create-text <file.txt> --actor <name>   # free-form: any text becomes the persona
 agentshield persona list|show <id>|render <id>|verify <file>|applications|remove <id>
 agentshield persona apply <id> --actor <name> [--set name=value]
 agentshield persona model <id> --provider <provider> --model <name> --actor <name>
+agentshield persona chat <id> --provider <provider> --model <name> --actor <name> --message <text>   # live test with YOUR API key
 
 agentshield runtime ingest <events.jsonl>
 agentshield runtime trace <trace-id> --json
@@ -130,6 +132,17 @@ agentshield persona model code-reviewer --provider openai --model gpt-4o --actor
 Supported providers: `openai` (chat completions), `anthropic`, `gemini`, `mistral`, `ollama`,
 `responses` (OpenAI Responses API), and `generic`.
 
+To verify a persona actually behaves as intended, send a live test message to the model with your
+own API key (read from the provider env var or `--api-key`; never stored). This is the one explicit,
+opt-in outbound call in the CLI:
+
+```bash
+export OPENAI_API_KEY=sk-…
+agentshield persona chat code-reviewer --provider openai --model gpt-4o --actor deploy-bot --message "Halo, kamu persona apa?"
+# Local models need no key:
+agentshield persona chat code-reviewer --provider ollama --model llama3.1 --actor deploy-bot --message "Halo"
+```
+
 In an agent harness, one call applies the persona, builds the model request, and records the
 application as a sanitized `persona.applied` runtime event (prompt digest + receipt only) so it
 appears in the evidence graph:
@@ -155,7 +168,7 @@ corepack pnpm dev:dashboard
 ```
 
 Open `http://127.0.0.1:4173`. The API binds to `127.0.0.1:4141` unless explicitly configured. It
-accepts requests only from loopback browser origins, limits request bodies to 1 MiB, and stores
+accepts requests only from loopback browser origins, limits request bodies to 8 MiB, and stores
 normalized reports under `.agentshield/`.
 
 ## Security model
@@ -190,6 +203,9 @@ normalized reports under `.agentshield/`.
 - Persona application receipts are hash-chained; a prompt digest (never the raw prompt) is all that
   can be recorded as a `persona.applied` runtime event.
 - Cloud upload, automatic hard deletion, LLM classification, and telemetry are disabled.
+- AgentShield never calls a model automatically. `persona chat` is the only outbound path: an
+  explicit, operator-initiated test that sends the operator's own persona and message to the
+  provider of their choice using their own API key, which is never persisted.
 
 AgentShield cannot prove that a component is safe. Review declared behavior, dependency provenance,
 and runtime approvals alongside its evidence. See [`SECURITY.md`](./SECURITY.md) for disclosure.

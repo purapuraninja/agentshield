@@ -16,9 +16,9 @@ import { renderAgentBom, renderHtml, renderMemoryAgentBom, renderMemoryEvidenceB
 import { auditMemory, classifyMemoryTypes, getMemoryRule, listQuarantine, memoryRules, quarantineMemory, reconcileMemoryInventory, restoreMemory, type AuditOptions,
   planRemediation, approveRemediation, executeRemediation, rollbackRemediation, rejectRemediation, expungeRemediation, listRemediationPlans, getRemediationPlan } from '@agentshield/memory';
 import {
-  applyPersona, buildModelRequest, listPersonaApplications, listPersonas, getPersona, loadPersonaFile,
-  MODEL_PROVIDERS, modelRequestOptionsSchema, registerPersona, registerPersonaText, removePersona, renderPersona,
-  validatePersona, verifyApplicationChain
+  applyPersona, buildModelRequest, chatWithModel, listPersonaApplications, listPersonas, getPersona, loadPersonaFile,
+  MODEL_PROVIDERS, modelRequestOptionsSchema, PROVIDER_ENV_KEYS, registerPersona, registerPersonaText, removePersona,
+  renderPersona, validatePersona, verifyApplicationChain
 } from '@agentshield/persona';
 import { EventStore, buildEvidenceGraph, createRuntimeEvent } from '@agentshield/runtime';
 import {
@@ -399,7 +399,7 @@ persona.command('apply <id>').description('Apply a persona: render, inject, and 
       `Receipt: ${applied.receipt}`, ...(applied.warnings.length ? ['', 'Warnings:', ...applied.warnings.map((warning) => `- ${warning}`)] : [])
     ].join('\n'));
   });
-persona.command('model <id>').description('Apply a persona and build a provider-native AI model request (openai, anthropic, gemini, generic)')
+persona.command('model <id>').description('Apply a persona and build a provider-native AI model request without calling the provider')
   .requiredOption('--provider <name>', `model provider: ${MODEL_PROVIDERS.join(', ')}`)
   .requiredOption('--model <name>', 'model identifier, e.g. gpt-4o')
   .requiredOption('--actor <name>').option('--reason <text>').option('--target <path>', 'store location', '.')
@@ -425,6 +425,38 @@ persona.command('model <id>').description('Apply a persona and build a provider-
     await emit(safeJson({
       applicationId: applied.applicationId, receipt: applied.receipt, ...built
     }), options.output);
+  });
+persona.command('chat <id>').description('Apply a persona and send a test message to a real model with YOUR API key; the reply is shown and never stored')
+  .requiredOption('--provider <name>', `model provider: ${MODEL_PROVIDERS.join(', ')}`)
+  .requiredOption('--model <name>', 'model identifier, e.g. gpt-4o')
+  .requiredOption('--actor <name>').requiredOption('--message <text>', 'test message to send to the model')
+  .option('--api-key <key>', 'provider API key (defaults to the provider env var; never persisted)')
+  .option('--base-url <url>', 'endpoint override (required for generic, e.g. http://127.0.0.1:8000/v1/chat/completions)')
+  .option('--reason <text>').option('--target <path>', 'store location', '.')
+  .option('--set <name=value>', 'set a persona variable (repeatable)', collectVariables, [])
+  .option('--temperature <number>', 'sampling temperature 0..2').option('--max-tokens <count>', 'max completion tokens')
+  .option('--top-p <number>', 'nucleus sampling 0..1').option('--timeout <seconds>', 'request timeout', '60')
+  .option('--json', 'JSON output')
+  .action(async (id, options) => {
+    const requestOptions = modelRequestOptionsSchema.parse({
+      provider: options.provider, model: options.model,
+      temperature: numericOption(options.temperature, '--temperature'),
+      maxTokens: numericOption(options.maxTokens, '--max-tokens'),
+      topP: numericOption(options.topP, '--top-p')
+    });
+    const applied = await applyPersona(personaTarget(options.target), id, {
+      actor: options.actor, reason: options.reason, variables: personaVariables(options.set)
+    });
+    for (const warning of applied.warnings) console.error(`Warning: ${warning}`);
+    const built = buildModelRequest(applied.prompt, requestOptions);
+    const envKey = PROVIDER_ENV_KEYS[built.provider] ? process.env[PROVIDER_ENV_KEYS[built.provider]] : undefined;
+    const reply = await chatWithModel(built, options.message, {
+      apiKey: options.apiKey ?? envKey, baseUrl: options.baseUrl, timeoutMs: Number(options.timeout) * 1000
+    });
+    await emit(options.json ? safeJson({ applicationId: applied.applicationId, receipt: applied.receipt, ...reply }) : [
+      `Persona ${applied.personaId} v${applied.version} · ${built.provider}/${built.model}`, `Receipt: ${applied.receipt}`,
+      `> ${options.message}`, '', reply.message
+    ].join('\n'));
   });
 persona.command('verify <file>').description('Validate a persona definition file without registering it').option('--json', 'JSON output')
   .action(async (file, options) => {
