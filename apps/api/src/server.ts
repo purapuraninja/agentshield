@@ -70,7 +70,7 @@ export async function buildServer(options: ApiOptions = {}): Promise<FastifyInst
     reply.status(status).send({ error: { code: status === 404 ? 'not_found' : 'request_failed', message: typed.message ?? String(error), requestId: request.id } });
   });
 
-  app.get('/health', async () => ({ status: 'ok', version: '0.1.0', rawContentUpload: false, authEnabled: auth.enabled, rateLimit: rateLimitConfig }));
+  app.get('/health', async () => ({ status: 'ok', version: '0.2.0', rawContentUpload: false, authEnabled: auth.enabled, rateLimit: rateLimitConfig }));
 
   app.get('/v1/scans', async (request) => {
     const query = request.query as { limit?: string; cursor?: string };
