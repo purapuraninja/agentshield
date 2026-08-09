@@ -1,6 +1,6 @@
 {
   "name": "@agentshield/persona",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Define, validate, render, and apply AI agent personas with a verifiable audit trail",
   "license": "Apache-2.0",

@@ -1,6 +1,6 @@
 {
   "name": "@agentshield/api",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "build": "esbuild src/index.ts --bundle --platform=node --format=cjs --outfile=dist/server.cjs",
