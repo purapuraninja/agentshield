@@ -144,7 +144,7 @@ export function Personas() {
 
     <section className="content-grid">
       <article className="panel persona-panel">
-        <div className="section-head"><div><p className="overline">Register</p><h2>New persona</h2></div><span className="secondary">{definitionFormat === 'freeform' ? 'any text' : 'YAML or JSON'}</span></div>
+        <div className="section-head"><div><p className="overline">Register</p><h2>New persona</h2></div><span className="secondary">{definitionFormat === 'freeform' ? 'any text' : 'YAML or JSON'} · {definitionText.length.toLocaleString()} chars</span></div>
         <div className="format-toggle" role="group" aria-label="Definition format">
           <button className={definitionFormat === 'structured' ? 'selected' : ''} onClick={() => { setDefinitionFormat('structured'); if (!definitionText.trim()) setDefinitionText(STARTER); setError(''); }}>Structured YAML/JSON</button>
           <button className={definitionFormat === 'freeform' ? 'selected' : ''} onClick={() => { setDefinitionFormat('freeform'); if (definitionText.trim() === STARTER.trim()) setDefinitionText(''); setError(''); }}>Free text</button>
@@ -152,7 +152,7 @@ export function Personas() {
         <div className="field">
           <label htmlFor="persona-definition">{definitionFormat === 'freeform' ? 'Prompt text' : 'Definition'}</label>
           <textarea id="persona-definition" className="field-textarea" rows={10} value={definitionText}
-            onChange={(event) => setDefinitionText(event.target.value)} spellCheck={false}
+            onChange={(event) => setDefinitionText(event.target.value)} spellCheck={false} maxLength={1_000_000}
             placeholder={definitionFormat === 'freeform' ? 'Paste any text — it becomes the persona. No YAML needed.' : 'id: support-engineer\nname: Support Engineer\nauthor: platform-team\nsystemPrompt: |\n  You are…'} />
         </div>
         <div className="persona-row">

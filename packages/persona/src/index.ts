@@ -34,7 +34,7 @@ export const personaDefinitionSchema = z.object({
   version: z.number().int().positive().default(1),
   description: z.string().max(1000).default(''),
   author: z.string().min(1).max(120),
-  systemPrompt: z.string().min(1).max(20_000),
+  systemPrompt: z.string().min(1).max(1_000_000),
   variables: z.array(personaVariableSchema).default([]),
   createdAt: z.string().optional(),
   updatedAt: z.string().optional(),
@@ -272,7 +272,16 @@ export async function registerPersonaText(target: string, text: string, actor: s
   // The free-form id is derived from the text alone, so an existing persona with this id already
   // holds the same prompt regardless of the actor; returning it keeps identical text idempotent.
   const existing = (await readPersonaStore(target)).personas.find((persona) => persona.id === definition.id);
-  const persona = existing ?? await persistPersona(target, definition);
+  let persona: PersonaDefinition;
+  try {
+    persona = existing ?? await persistPersona(target, definition);
+  } catch (error) {
+    // Surface schema failures (e.g. the size cap) as a readable issue list instead of raw Zod JSON.
+    if (error instanceof z.ZodError) {
+      throw new Error(`Persona rejected: ${error.issues.map((issue) => `${issue.path.join('.') || 'persona'}: ${issue.message}`).join('; ')}`);
+    }
+    throw error;
+  }
   return { persona, warnings: injectionIssues(trimmed) };
 }
 

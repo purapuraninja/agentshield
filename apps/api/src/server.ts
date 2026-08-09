@@ -34,7 +34,7 @@ export async function buildServer(options: ApiOptions = {}): Promise<FastifyInst
   const rateLimitConfig = options.rateLimit ?? loadRateLimitConfig();
   const rateLimiter = new RateLimiter(rateLimitConfig);
   const allowedOrigins = options.allowedOrigins ?? (process.env.AGENTSHIELD_ALLOWED_ORIGINS ? process.env.AGENTSHIELD_ALLOWED_ORIGINS.split(',').map((item) => item.trim()).filter(Boolean) : undefined);
-  const fastifyOptions = { logger: options.logger ?? true, bodyLimit: 1_048_576, requestIdHeader: 'x-request-id', genReqId: () => createId('req'), ...(options.tls ? { https: options.tls } : {}) };
+  const fastifyOptions = { logger: options.logger ?? true, bodyLimit: 8_388_608, requestIdHeader: 'x-request-id', genReqId: () => createId('req'), ...(options.tls ? { https: options.tls } : {}) };
   const app = Fastify(fastifyOptions as never) as unknown as FastifyInstance;
   await app.register(cors, {
     origin: (origin, callback) => {

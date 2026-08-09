@@ -165,6 +165,21 @@ describe('free-form persona registration', () => {
     expect(definition.systemPrompt).toBe('Hallo dunia');
     expect(definition.id).toBe(freeformPersonaDefinition('  Hallo dunia  ', 'me').id);
   });
+
+  it('accepts long free-form text beyond the old 20k limit', async () => {
+    const target = await tempTarget();
+    const longText = `Panduan asisten.\n${'Kamu membantu pengguna dengan sabar dan jelas. '.repeat(1000)}`;
+    expect(longText.length).toBeGreaterThan(20_000);
+    const result = await registerPersonaText(target, longText, 'dashboard');
+    expect(result.persona.systemPrompt.length).toBeGreaterThan(20_000);
+    expect(result.persona.id).toMatch(/^persona-/);
+  });
+
+  it('rejects text above the size cap with a readable message, not raw Zod JSON', async () => {
+    const target = await tempTarget();
+    const huge = 'x'.repeat(1_000_001);
+    await expect(registerPersonaText(target, huge, 'dashboard')).rejects.toThrow(/^Persona rejected: systemPrompt:/);
+  });
 });
 
 describe('persona application and audit chain', () => {
