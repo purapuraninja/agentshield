@@ -5,7 +5,7 @@ import cors from '@fastify/cors';
 import { createId, memoryAuditReportSchema, scanReportSchema } from '@agentshield/core';
 import { evaluatePolicy, scanInjectionText, scanTarget, staticRules, getRule, type PolicyFile } from '@agentshield/scanner';
 import { auditMemory, classifyMemoryTypes, getMemoryRule, listQuarantine, listRemediationPlans, memoryRules, planRemediation, approveRemediation, executeRemediation, rollbackRemediation, quarantineMemory, reconcileMemoryInventory, restoreMemory } from '@agentshield/memory';
-import { applyPersona, buildModelRequest, getPersona, listPersonaApplications, listPersonas, loadPersonaFile, modelRequestOptionsSchema, registerPersona, registerPersonaText, removePersona, validatePersona, verifyApplicationChain } from '@agentshield/persona';
+import { applyPersona, buildModelRequest, chatWithModel, getPersona, listPersonaApplications, listPersonas, loadPersonaFile, modelRequestOptionsSchema, registerPersona, registerPersonaText, removePersona, validatePersona, verifyApplicationChain } from '@agentshield/persona';
 import { EventStore, createRuntimeEvent } from '@agentshield/runtime';
 import { renderMemoryEvidenceBundle, renderMemorySarif } from '@agentshield/reports';
 import {
@@ -13,7 +13,7 @@ import {
   type AuthConfig, type RateLimitConfig
 } from './auth.js';
 
-interface ApiOptions { dataDir?: string; logger?: boolean; auth?: AuthConfig; rateLimit?: RateLimitConfig; allowedOrigins?: string[]; tls?: { cert: string; key: string } }
+interface ApiOptions { dataDir?: string; logger?: boolean; auth?: AuthConfig; rateLimit?: RateLimitConfig; allowedOrigins?: string[]; tls?: { cert: string; key: string }; chatFetch?: typeof fetch }
 
 async function persist(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
@@ -266,6 +266,43 @@ export async function buildServer(options: ApiOptions = {}): Promise<FastifyInst
       return reply.status(status).send(personaError(request, status, status === 404 ? 'not_found' : 'invalid_request', message));
     }
   });
+  app.post('/v1/personas/:id/chat', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = request.body as {
+      actor: string; message: string; provider?: string; model?: string; apiKey?: string; baseUrl?: string;
+      variables?: Record<string, string>; reason?: string; temperature?: number; maxTokens?: number; topP?: number
+    };
+    if (!body?.actor) return reply.status(400).send(personaError(request, 400, 'invalid_request', 'actor is required'));
+    if (typeof body.message !== 'string' || !body.message.trim()) return reply.status(400).send(personaError(request, 400, 'invalid_request', 'message is required'));
+    let requestOptions;
+    try {
+      requestOptions = modelRequestOptionsSchema.parse({
+        provider: body.provider, model: body.model, temperature: body.temperature,
+        maxTokens: body.maxTokens, topP: body.topP
+      });
+    } catch (error) {
+      return reply.status(400).send(personaError(request, 400, 'invalid_request', error instanceof Error ? error.message : String(error)));
+    }
+    try {
+      // The apply is recorded first (receipt), then the provider is called with the operator's
+      // per-request API key, which is never persisted by AgentShield.
+      const applied = await applyPersona(personaTarget, id, { actor: body.actor, reason: body.reason, variables: body.variables });
+      const built = buildModelRequest(applied.prompt, requestOptions);
+      const chat = await chatWithModel(built, body.message, {
+        apiKey: body.apiKey, baseUrl: body.baseUrl,
+        ...(options.chatFetch ? { fetchImpl: options.chatFetch } : {})
+      });
+      return { data: {
+        applicationId: applied.applicationId, receipt: applied.receipt, warnings: applied.warnings,
+        provider: chat.provider, model: chat.model, message: chat.message, usage: chat.usage
+      } };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const status = /not found/i.test(message) ? 404 : 400;
+      return reply.status(status).send(personaError(request, status, status === 404 ? 'not_found' : 'invalid_request', message));
+    }
+  });
+
   app.post('/v1/personas/:id/model-request', async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = request.body as {

@@ -332,6 +332,11 @@ Terakhir diperbarui: 2026-08-09.
   `definition`, remove, apply, model-request dengan validasi sebelum receipt dicatat, applications +
   verifikasi chain) dan dashboard view "Personas" untuk registrasi, apply + build model request
   per provider/model, serta audit trail aplikasi. Diuji API contract dan browser end-to-end.
+- [x] Panel "Try chat" di dashboard (view Personas): `POST /v1/personas/:id/chat` — apply persona
+  (mencatat receipt) → build request → kirim pesan ke provider dengan **API key operator yang
+  dikirim per-request dari dashboard dan tidak pernah disimpan** → jawaban model, token usage, dan
+  receipt ditampilkan langsung di UI. Jalur keluar eksplisit dan opt-in yang sama dengan
+  `persona chat` CLI (memakai `chatWithModel`), dengan test API contract memakai `chatFetch` mock.
 - [x] Registrasi persona **free-form** (`format: freeform` di API, `persona create-text <file>` di
   CLI, toggle "Free text" di dashboard): teks apa pun yang ditempel langsung menjadi system prompt
   (batas 1 juta karakter, body API dinaikkan ke 8 MB), `id`/`name` diturunkan otomatis (id

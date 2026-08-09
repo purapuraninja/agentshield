@@ -232,6 +232,54 @@ describe('local API', () => {
     await app.close();
   });
 
+  it('chats with a persona through the provider using a per-request API key', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'agentshield-api-'));
+    const calls: Array<{ url: string; headers: Record<string, string>; body: Record<string, unknown> }> = [];
+    const chatFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(input), headers: init?.headers as Record<string, string>, body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+      return {
+        ok: true, status: 200,
+        json: async () => ({ choices: [{ message: { role: 'assistant', content: 'Halo! Saya asisten yang ramah.' } }], usage: { prompt_tokens: 14, completion_tokens: 6 } })
+      } as Response;
+    }) as unknown as typeof fetch;
+    const app = await buildServer({ dataDir: directory, logger: false, chatFetch });
+
+    const created = await app.inject({ method: 'POST', url: '/v1/personas', payload: { definitionText: 'Kamu adalah asisten yang ramah.', actor: 'dashboard', format: 'freeform' } });
+    expect(created.statusCode).toBe(201);
+    const personaId = created.json().data.id;
+
+    const chat = await app.inject({ method: 'POST', url: `/v1/personas/${personaId}/chat`, payload: { actor: 'deploy-bot', provider: 'openai', model: 'gpt-4o', apiKey: 'sk-dashboard-test', message: 'Halo!' } });
+    expect(chat.statusCode).toBe(200);
+    expect(chat.json().data.message).toContain('Halo! Saya asisten');
+    expect(chat.json().data.receipt).toMatch(/^persona1:/);
+    expect(chat.json().data.usage).toEqual({ promptTokens: 14, completionTokens: 6 });
+    expect(calls).toHaveLength(1);
+    const call = calls[0]!;
+    expect(call.url).toBe('https://api.openai.com/v1/chat/completions');
+    expect(call.headers.authorization).toBe('Bearer sk-dashboard-test');
+    const messages = call.body.messages as Array<{ role: string; content: string }>;
+    expect(messages[0]).toMatchObject({ role: 'system', content: 'Kamu adalah asisten yang ramah.' });
+    expect(messages[1]).toEqual({ role: 'user', content: 'Halo!' });
+
+    // The apply that preceded the chat is part of the audited chain.
+    const audit = await app.inject({ method: 'GET', url: '/v1/personas/applications' });
+    expect(audit.json().chain.valid).toBe(true);
+    expect(audit.json().applications).toHaveLength(1);
+
+    // Missing message is rejected before any provider call is made.
+    const noMessage = await app.inject({ method: 'POST', url: `/v1/personas/${personaId}/chat`, payload: { actor: 'deploy-bot', provider: 'openai', model: 'gpt-4o', apiKey: 'sk-test' } });
+    expect(noMessage.statusCode).toBe(400);
+    expect(noMessage.json().error.code).toBe('invalid_request');
+    expect(calls).toHaveLength(1);
+
+    // Generic provider routes through the operator-supplied base URL.
+    const genericChat = await app.inject({ method: 'POST', url: `/v1/personas/${personaId}/chat`, payload: { actor: 'deploy-bot', provider: 'generic', model: 'local-model', apiKey: 'sk-test', baseUrl: 'http://127.0.0.1:8080/v1/chat/completions', message: 'Tes' } });
+    expect(genericChat.statusCode).toBe(200);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.url).toBe('http://127.0.0.1:8080/v1/chat/completions');
+    await app.close();
+  });
+
   it('rejects requests without a valid bearer token when auth is enabled', async () => {
     const token = 'as_test_server_token_456';
     const app = await buildServer({ logger: false, auth: { enabled: true, tokenHash: hashToken(token) } });

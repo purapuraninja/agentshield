@@ -47,6 +47,12 @@ export function Personas() {
   const [temperature, setTemperature] = useState('');
   const [applyActor, setApplyActor] = useState('dashboard');
   const [result, setResult] = useState<ModelRequestData | null>(null);
+  const [chatMessage, setChatMessage] = useState('Halo, kamu persona apa?');
+  const [chatApiKey, setChatApiKey] = useState('');
+  const [chatBaseUrl, setChatBaseUrl] = useState('');
+  const [chatReply, setChatReply] = useState<{ message: string; receipt: string; warnings: string[]; usage?: { promptTokens?: number; completionTokens?: number } } | null>(null);
+  const [chatBusy, setChatBusy] = useState(false);
+  const [chatError, setChatError] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
@@ -107,6 +113,30 @@ export function Personas() {
       setSelectedId(data.data.id);
     } catch (registerError) { setError(registerError instanceof Error ? registerError.message : String(registerError)); }
     finally { setBusy(false); }
+  }
+
+  async function sendChat() {
+    if (!selected || !chatMessage.trim() || !model.trim()) return;
+    setChatBusy(true); setChatError(''); setChatReply(null);
+    try {
+      const variables = Object.fromEntries(Object.entries(variableValues).filter(([, value]) => value.trim() !== ''));
+      const body: Record<string, unknown> = {
+        actor: applyActor.trim() || 'dashboard', provider, model, message: chatMessage, variables
+      };
+      if (chatApiKey.trim()) body.apiKey = chatApiKey.trim();
+      if (chatBaseUrl.trim()) body.baseUrl = chatBaseUrl.trim();
+      if (maxTokens.trim()) body.maxTokens = Number(maxTokens);
+      if (temperature.trim()) body.temperature = Number(temperature);
+      const response = await apiFetch(`/v1/personas/${selected.id}/chat`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
+      });
+      if (!response.ok) throw new Error(await apiErrorMessage(response, 'Chat failed'));
+      const data = await response.json();
+      setChatReply({ message: data.data.message, receipt: data.data.receipt, warnings: data.data.warnings ?? [], usage: data.data.usage });
+      setMessage(`Chat applied ${selected.id} v${selected.version}; receipt ${data.data.receipt.slice(0, 18)}…`);
+      await refresh();
+    } catch (chatRequestError) { setChatError(chatRequestError instanceof Error ? chatRequestError.message : String(chatRequestError)); }
+    finally { setChatBusy(false); }
   }
 
   async function buildRequest() {
@@ -208,6 +238,50 @@ export function Personas() {
           </>}
       </article>
     </section>
+
+    <article className="panel persona-panel">
+      <div className="section-head"><div><p className="overline">Live test</p><h2>Try chat</h2></div>
+        <span className="badge info">key per request · never stored</span></div>
+      <p className="secondary" style={{ maxWidth: 'none' }}>Send a message to the model with your own API key to verify the persona behaves as written. Applying records a receipt in the audit trail, the provider request is built, and the model reply is shown here.</p>
+      <div className="persona-row three">
+        <div className="field"><label htmlFor="chat-provider">Provider</label>
+          <select id="chat-provider" className="field-input" value={provider} onChange={(event) => setProvider(event.target.value as Provider)}>
+            {PROVIDERS.map((item) => <option key={item} value={item}>{item}</option>)}
+          </select></div>
+        <div className="field"><label htmlFor="chat-model">Model</label>
+          <input id="chat-model" className="field-input" value={model} onChange={(event) => setModel(event.target.value)} placeholder="gpt-4o" /></div>
+        <div className="field"><label htmlFor="chat-api-key">API key</label>
+          <input id="chat-api-key" type="password" className="field-input" value={chatApiKey} onChange={(event) => setChatApiKey(event.target.value)}
+            autoComplete="off" placeholder={provider === 'ollama' || provider === 'generic' ? 'optional for this provider' : 'sk-… (not stored)'} /></div>
+      </div>
+      {provider === 'generic' && <div className="field">
+        <label htmlFor="chat-base-url">Base URL (OpenAI-compatible endpoint)</label>
+        <input id="chat-base-url" className="field-input" value={chatBaseUrl} onChange={(event) => setChatBaseUrl(event.target.value)}
+          placeholder="https://api.example.com/v1/chat/completions" />
+      </div>}
+      <div className="field">
+        <label htmlFor="chat-message">Message</label>
+        <textarea id="chat-message" className="field-textarea" rows={3} style={{ minHeight: 88 }} value={chatMessage}
+          onChange={(event) => setChatMessage(event.target.value)} placeholder="Halo, kamu persona apa?" />
+      </div>
+      <div className="persona-row">
+        <span className="secondary" style={{ maxWidth: 'none' }}>Ollama needs no key; generic needs a base URL. The receipt lands in the audit trail below.</span>
+        <button className="primary persona-button" onClick={() => void sendChat()} disabled={chatBusy || !selected || !chatMessage.trim() || !model.trim()}>
+          <Icon name="arrow" />{chatBusy ? 'Sending…' : 'Send to model'}
+        </button>
+      </div>
+      {!personas.length && <p className="secondary" style={{ marginTop: 11, maxWidth: 'none' }}>No personas registered yet — register one above to try it here.</p>}
+      {chatError && <div className="error" role="alert"><Icon name="alert" /><span>{chatError}</span></div>}
+      {chatReply && <div className="chat-reply">
+        <div className="chat-reply-head">
+          <span className="badge info">reply</span>
+          <span className="secondary" style={{ maxWidth: 'none' }}>receipt <code>{chatReply.receipt.slice(0, 24)}…</code></span>
+          {chatReply.usage && <span className="secondary" style={{ maxWidth: 'none' }}>{chatReply.usage.promptTokens ?? '?'} in · {chatReply.usage.completionTokens ?? '?'} out</span>}
+        </div>
+        {chatReply.warnings.length > 0 && <div className="error" role="status" style={{ marginBottom: 10 }}><Icon name="alert" /><span>Advisory: {chatReply.warnings.join('; ')}</span></div>}
+        <p>{chatReply.message}</p>
+      </div>}
+    </article>
 
     {result && <article className="panel persona-panel">
       <div className="section-head"><div><p className="overline">Provider-native request · {result.provider} · {result.model}</p><h2>Ready to inject</h2></div>
