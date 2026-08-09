@@ -346,7 +346,9 @@ persona.command('create <file>').description('Register a persona from a YAML or 
   .requiredOption('--actor <name>').option('--target <path>', 'store location', '.')
   .action(async (file, options) => {
     const definition = loadPersonaFile(await readFile(resolve(file), 'utf8'));
+    const validation = validatePersona(definition);
     const registered = await registerPersona(personaTarget(options.target), definition, options.actor);
+    for (const warning of validation.warnings) console.error(`Warning: ${warning}`);
     await emit(`Registered ${registered.id} v${registered.version} (${registered.name})`);
   });
 persona.command('list').description('List registered personas').option('--target <path>', 'store location', '.').option('--json', 'JSON output')
@@ -369,6 +371,7 @@ persona.command('render <id>').description('Render the persona system prompt wit
     const found = await getPersona(personaTarget(options.target), id);
     if (!found) throw new Error(`Persona not found: ${id}`);
     const rendered = renderPersona(found, personaVariables(options.set));
+    for (const warning of rendered.warnings) console.error(`Warning: ${warning}`);
     await emit(rendered.prompt, options.output);
   });
 persona.command('apply <id>').description('Apply a persona: render, inject, and record an immutable application receipt')
@@ -381,15 +384,17 @@ persona.command('apply <id>').description('Apply a persona: render, inject, and 
       actor: options.actor, reason: options.reason, variables: personaVariables(options.set)
     });
     if (options.output) await emit(applied.prompt, options.output);
+    for (const warning of applied.warnings) console.error(`Warning: ${warning}`);
     await emit(options.json ? safeJson(applied) : [
       `Applied ${applied.personaId} v${applied.version} by ${applied.actor}`, `Prompt hash: ${applied.promptHash}`,
-      `Receipt: ${applied.receipt}`
+      `Receipt: ${applied.receipt}`, ...(applied.warnings.length ? ['', 'Warnings:', ...applied.warnings.map((warning) => `- ${warning}`)] : [])
     ].join('\n'));
   });
 persona.command('verify <file>').description('Validate a persona definition file without registering it').option('--json', 'JSON output')
   .action(async (file, options) => {
     const result = validatePersona(loadPersonaFile(await readFile(resolve(file), 'utf8')));
-    await emit(options.json ? safeJson(result) : result.valid ? 'Valid persona.' : `Invalid persona:\n${result.issues.map((issue) => `- ${issue}`).join('\n')}`);
+    const warnings = options.json ? '' : result.warnings.length ? `\nWarnings (operator decides):\n${result.warnings.map((warning) => `- ${warning}`).join('\n')}` : '';
+    await emit(options.json ? safeJson(result) : result.valid ? `Valid persona.${warnings}` : `Invalid persona:\n${result.issues.map((issue) => `- ${issue}`).join('\n')}`);
     if (!result.valid) process.exitCode = 4;
   });
 persona.command('applications').description('List applied-persona receipts and verify the hash chain')

@@ -12,10 +12,12 @@ import { createId, sha256 } from '@agentshield/core';
  * applying it renders the prompt and records an immutable, hash-chained application receipt so an
  * operator can always prove which persona version was applied, when, and by whom — and detect drift.
  *
- * Security posture: personas may set identity and behavior (that is their purpose), but a persona
- * must never smuggle in instruction-override, safety-bypass, or secret-exfiltration language. The
- * injection guard rejects those patterns, so the trusted persona channel cannot be used to remove
- * the guardrails it is meant to express.
+ * Security posture: personas may set identity and behavior (that is their purpose). The operator is
+ * the owner, so a persona is never rejected for its content — the injection scanner is advisory: it
+ * surfaces instruction-override, safety-bypass, or secret-exfiltration language as warnings, and it
+ * is the human who decides whether to proceed. Only structural problems (schema violations,
+ * undeclared variables, missing required variables) are errors, because those make a persona
+ * unusable, not because they are unsafe.
  */
 
 export const personaVariableSchema = z.object({
@@ -50,6 +52,7 @@ export interface AppliedPersona {
   actor: string;
   reason?: string;
   receipt: string;
+  warnings: string[];
 }
 
 export interface PersonaStoreFile {
@@ -60,6 +63,7 @@ export interface PersonaStoreFile {
 export interface PersonaValidationResult {
   valid: boolean;
   issues: string[];
+  warnings: string[];
 }
 
 export interface ApplyOptions {
@@ -69,9 +73,8 @@ export interface ApplyOptions {
 }
 
 /**
- * Personas may legitimately set identity and behavioral rules, but never override higher-priority
- * instructions, disable safety controls, or exfiltrate secrets. Matching patterns are rejected both
- * in the template and in rendered variable values.
+ * Advisory language scanner. Matching patterns never block a persona; they produce warnings so the
+ * operator (the owner) can make an informed decision before applying it.
  */
 const INJECTION_PATTERNS: Array<RegExp> = [
   /(?:ignore|disregard|forget)\s+(?:all\s+)?(?:previous|prior|system|developer)\s+instructions?/i,
@@ -105,14 +108,16 @@ export function contentHash(persona: Omit<PersonaDefinition, 'contentHash' | 'cr
 }
 
 /**
- * Validates a persona definition: schema, template placeholders vs declared variables, and the
- * injection guard over both the template and every variable default.
+ * Validates a persona definition. Only structural problems make a persona invalid (schema
+ * violations, undeclared template variables, required variables never used). Advisory language in
+ * the template or variable defaults is returned as warnings and never blocks registration.
  */
 export function validatePersona(value: unknown): PersonaValidationResult {
   const issues: string[] = [];
+  const warnings: string[] = [];
   const parsed = personaDefinitionSchema.safeParse(value);
   if (!parsed.success) {
-    return { valid: false, issues: parsed.error.issues.map((issue) => `${issue.path.join('.') || 'persona'}: ${issue.message}`) };
+    return { valid: false, issues: parsed.error.issues.map((issue) => `${issue.path.join('.') || 'persona'}: ${issue.message}`), warnings: [] };
   }
   const persona = parsed.data;
   const declared = new Set(persona.variables.map((variable) => variable.name));
@@ -125,24 +130,28 @@ export function validatePersona(value: unknown): PersonaValidationResult {
   for (const variable of required) {
     if (!used.has(variable.name)) issues.push(`declared required variable “${variable.name}” is never used in the template`);
   }
-  issues.push(...injectionIssues(persona.systemPrompt));
+  warnings.push(...injectionIssues(persona.systemPrompt));
   for (const variable of persona.variables) {
-    if (variable.default) issues.push(...injectionIssues(variable.default).map((issue) => `variable “${variable.name}” ${issue}`));
+    if (variable.default) warnings.push(...injectionIssues(variable.default).map((issue) => `variable “${variable.name}” ${issue}`));
   }
-  return { valid: issues.length === 0, issues };
+  return { valid: issues.length === 0, issues, warnings };
 }
 
 export interface RenderedPersona {
   prompt: string;
   appliedVariables: Record<string, string>;
+  warnings: string[];
 }
 
 /**
  * Renders the system-prompt template. Required variables without a default must be provided;
- * undeclared or unused overrides are rejected so a typo cannot silently alter the applied persona.
+ * undeclared or unknown overrides are errors so a typo cannot silently alter the applied persona.
+ * Advisory language in override values is returned as warnings, never as an error — the operator is
+ * the owner and decides.
  */
 export function renderPersona(persona: PersonaDefinition, overrides: Record<string, string> = {}): RenderedPersona {
   const issues: string[] = [];
+  const warnings: string[] = [];
   for (const key of Object.keys(overrides)) {
     if (!persona.variables.some((variable) => variable.name === key)) issues.push(`unknown variable override “${key}”`);
   }
@@ -153,12 +162,12 @@ export function renderPersona(persona: PersonaDefinition, overrides: Record<stri
       if (variable.required) issues.push(`missing required variable “${variable.name}”`);
       continue;
     }
-    issues.push(...injectionIssues(value).map((issue) => `variable “${variable.name}” ${issue}`));
+    warnings.push(...injectionIssues(value).map((issue) => `variable “${variable.name}” ${issue}`));
     appliedVariables[variable.name] = value;
   }
   if (issues.length) throw new Error(`Cannot render persona “${persona.id}”: ${issues.join('; ')}`);
   const prompt = persona.systemPrompt.replace(PLACEHOLDER, (_match, name: string) => appliedVariables[name] ?? '');
-  return { prompt, appliedVariables };
+  return { prompt, appliedVariables, warnings };
 }
 
 function personaStoreDir(target: string): string {
@@ -240,11 +249,12 @@ async function appendApplication(target: string, applied: AppliedPersona): Promi
     const last = JSON.parse(lines.at(-1) ?? '{}');
     previousHash = last.hash ?? previousHash;
   } catch { /* first application */ }
-  // The raw prompt never touches the audit file; only its hash is recorded.
+  // The raw prompt and advisory warnings never touch the audit file; only its hash and receipt are
+  // recorded so the chain stays verifiable without persisting the prompt text.
   const entry = {
     applicationId: applied.applicationId, personaId: applied.personaId, version: applied.version,
     promptHash: applied.promptHash, appliedAt: applied.appliedAt, actor: applied.actor,
-    reason: applied.reason, previousHash
+    reason: applied.reason, receipt: applied.receipt, previousHash
   };
   await appendFile(path, `${JSON.stringify({ ...entry, hash: sha256(JSON.stringify(entry)) })}\n`, { encoding: 'utf8', mode: 0o600 });
 }
@@ -268,7 +278,8 @@ export async function applyPersona(target: string, id: string, options: ApplyOpt
     appliedAt,
     actor: options.actor,
     reason: options.reason,
-    receipt: `persona1:${sha256([persona.id, String(persona.version), rendered.prompt, options.actor, appliedAt].join('\0')).replace('sha256:', '')}`
+    receipt: `persona1:${sha256([persona.id, String(persona.version), rendered.prompt, options.actor, appliedAt].join('\0')).replace('sha256:', '')}`,
+    warnings: rendered.warnings
   };
   await appendApplication(target, applied);
   return applied;

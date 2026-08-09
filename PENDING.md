@@ -287,9 +287,11 @@ Terakhir diperbarui: 2026-08-09.
 
 - [x] Package baru `@agentshield/persona`: definisi persona versi (id, author, system-prompt template
   dengan variabel deklaratif), store persisted content-addressed (`.agentshield/personas.json`),
-  render dengan override variabel, dan **injection guard** yang menolak persona yang menyelundupkan
-  instruction-override, safety-bypass, atau secret-exfiltration (EN + ID) baik di template maupun
-  nilai variabel — kanal persona yang tepercaya tidak bisa dipakai untuk melepas guardrail.
+  render dengan override variabel, dan **scanner bahasa advisory**: instruction-override,
+  safety-bypass, atau secret-exfiltration (EN + ID) di template, default variabel, atau nilai
+  override ditampilkan sebagai **warning, bukan penolakan** — operator adalah pemilik persona dan
+  yang memutuskan; hanya masalah struktural (schema, variabel tak dideklarasikan, required hilang)
+  yang menjadi error.
 - [x] `applyPersona` merender prompt, mencatat receipt immutable hash-chained
   (`persona-applications.jsonl`, prompt mentah tidak pernah disimpan, hanya hash-nya), dan
   `verifyApplicationChain` mendeteksi tampering pada rantai aplikasi.
