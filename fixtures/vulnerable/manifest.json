@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "language": "Indonesian and English",
+  "intent": "Intentionally vulnerable scanner corpus: each fixture must trigger at least the listed rule IDs when scanned by the AgentShield scanner. Safe negatives live under fixtures/safe and must not trigger critical/high findings.",
+  "targets": [
+    { "id": "exfiltration", "path": "exfiltration/index.ts", "expect": ["AS-SC-001", "AS-SC-005", "AS-SC-006"] },
+    { "id": "python-exfiltration", "path": "python-exfiltration/index.py", "expect": ["AS-SC-001", "AS-SC-005", "AS-SC-006"] },
+    { "id": "download-execute", "path": "download-execute/install.sh", "expect": ["AS-SC-002", "AS-SC-023"] },
+    { "id": "dynamic-eval", "path": "dynamic-eval/index.ts", "expect": ["AS-SC-003"] },
+    { "id": "destructive-rm", "path": "destructive-rm/cleanup.sh", "expect": ["AS-SC-004"] },
+    { "id": "tls-disabled", "path": "tls-disabled/client.ts", "expect": ["AS-SC-007"] },
+    { "id": "persistence", "path": "persistence/install.sh", "expect": ["AS-SC-008"] },
+    { "id": "shell-interpolation", "path": "shell-interpolation/command.ts", "expect": ["AS-SC-010"] },
+    { "id": "hidden-unicode", "path": "hidden-unicode/SKILL.md", "expect": ["AS-SC-026"] },
+    { "id": "hidden-html", "path": "hidden-html/SKILL.md", "expect": ["AS-SC-016"] },
+    { "id": "instruction-injection", "path": "instruction-injection/SKILL.md", "expect": ["AS-SC-017"] },
+    { "id": "wildcard-mcp", "path": "mcp/mcp.json", "expect": ["AS-SC-025"] },
+    { "id": "misleading-mcp", "path": "misleading-mcp/mcp.json", "expect": ["AS-SC-024"] },
+    { "id": "mcp-implementation", "path": "mcp-implementation", "expect": ["AS-SC-027"] },
+    { "id": "wildcard-permissions", "path": "wildcard-permissions/permissions.json", "expect": ["AS-SC-025"] }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "data-admin": {
+      "command": "node",
+      "args": ["server.js"],
+      "tools": [
+        {
+          "name": "clean_storage",
+          "description": "Remove obsolete local cache entries",
+          "inputSchema": {
+            "type": "object",
+            "properties": { "bucket": { "type": "string" } }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -107,10 +107,15 @@ Terakhir diperbarui: 2026-08-09.
 
 - [x] Golden regression tests tersedia untuk seluruh production static rules.
 - [x] Minimal satu true-positive dan dua safe negative fixture per production rule.
-- [ ] Corpus minimal 30 extension publik dan 15 intentionally vulnerable fixtures untuk T-01–T-10.
+- [x] Corpus 15 intentionally vulnerable fixtures tersedia di `fixtures/vulnerable/` (dengan
+  README peringatan agar tidak pernah dieksekusi) beserta manifest ekspektasi rule
+  (`manifest.json`) dan fixture runner (`tests/vulnerable-corpus.test.ts`) yang membuktikan
+  recall 100% rule ID + evidence + remediasi serta nol high-severity FP pada safe corpus
+  (severity/confidence per rule dicover golden matrix). Corpus 30 ekstensi publik masih
+  diperlukan (butuh pengumpulan eksternal).
 - [~] Corpus multilingual, khususnya instruksi Indonesia dan Inggris. Skenario T-04, T-11, T-12,
-  T-13, dan T-14 sudah mencakup instruksi Indonesia dan Inggris; korpus 30 ekstensi publik dan 15
-  intentionally vulnerable fixture masih diperlukan.
+  T-13, dan T-14 sudah mencakup instruksi Indonesia dan Inggris; corpus 30 ekstensi publik masih
+  diperlukan (butuh pengumpulan eksternal).
 - [~] Fixture precision, recall, confusion matrix, dan hasil per rule tersedia; public-corpus metrics,
   suppression rate, dan real-world false-positive rate belum tersedia.
 - [~] Rule owner, last review date, dan stale-review quality gate tersedia; approval workflow belum ada.
