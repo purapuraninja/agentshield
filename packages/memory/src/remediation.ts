@@ -1,10 +1,10 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { createId } from '@agentshield/core';
 import { loadMemory, quarantineMemory, restoreMemory } from './index.js';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, extname, join, resolve } from 'node:path';
 
-export type RemediationState = 'planned' | 'approved' | 'executed' | 'rolled_back' | 'rejected';
-export type RemediationAction = 'quarantine' | 'restore' | 'deprecate';
+export type RemediationState = 'planned' | 'approved' | 'executed' | 'rolled_back' | 'rejected' | 'deleted_after_retention';
+export type RemediationAction = 'quarantine' | 'restore' | 'deprecate' | 'delete';
 
 export interface RemediationStage {
   actor: string;
@@ -26,13 +26,41 @@ export interface RemediationPlan {
   executed?: RemediationStage;
   rolledBack?: RemediationStage;
   rejected?: RemediationStage;
+  deletedAfterRetention?: RemediationStage;
 }
 export interface RemediationFile { version: 1; plans: RemediationPlan[] }
 export interface PlanOptions { idempotencyKey?: string; requireTwoPerson?: boolean }
 
+/**
+ * Hard-delete-after-retention marker. Deleting source memory is destructive and irreversible, so the
+ * workflow is strictly opt-in: `expungeRemediation` refuses to run unless {@link HardDeleteOptions.enableHardDelete}
+ * is explicitly true, the plan is `deprecate` and already `executed`, and the retention period since
+ * execution has elapsed. The marker records what was deleted so a later audit excludes it and a
+ * reviewer can account for the exclusion.
+ */
+export interface HardDeleteMarker {
+  memoryId: string;
+  externalId: string;
+  contentHash: string;
+  planId: string;
+  deletedAt: string;
+  actor: string;
+  reason: string;
+}
+
+export interface HardDeleteOptions {
+  /** Retention period in days after execution; default 30. 0 allows immediate deletion. */
+  retentionDays?: number;
+  /** Explicit opt-in. Hard delete stays disabled by default. */
+  enableHardDelete?: boolean;
+}
+
 function remediationDir(target: string): string {
   const absolute = resolve(target);
-  return join(dirname(absolute), '.agentshield');
+  // Must match `dataDirectory` in index.ts so audit reads what remediation writes: for a directory
+  // target (markdown) the sidecar lives inside the target, for a file target next to it.
+  try { return extname(absolute) ? join(dirname(absolute), '.agentshield') : join(absolute, '.agentshield'); }
+  catch { return join(dirname(absolute), '.agentshield'); }
 }
 
 async function readRemediation(target: string): Promise<RemediationFile> {
@@ -115,6 +143,43 @@ export async function rollbackRemediation(target: string, planId: string, actor:
   plan.rolledBack = { actor, reason, timestamp: new Date().toISOString(), expectedSourceHash: plan.expectedSourceHash };
   await writeRemediation(target, file);
   return plan;
+}
+
+export async function expungeRemediation(target: string, planId: string, actor: string, reason: string, options: HardDeleteOptions = {}): Promise<RemediationPlan> {
+  if (!actor.trim() || !reason.trim()) throw new Error('Hard delete requires a non-empty actor and reason');
+  if (options.enableHardDelete !== true) throw new Error('Hard delete is disabled by default; pass enableHardDelete: true explicitly');
+  const retentionDays = options.retentionDays ?? 30;
+  if (!Number.isFinite(retentionDays) || retentionDays < 0) throw new Error('retentionDays must be a non-negative number');
+  const file = await readRemediation(target);
+  const plan = file.plans.find((item) => item.planId === planId);
+  if (!plan) throw new Error(`Remediation plan not found: ${planId}`);
+  if (plan.state !== 'executed') throw new Error(`Plan ${planId} must be executed before retention expiry (current: ${plan.state})`);
+  if (plan.action !== 'deprecate' && plan.action !== 'delete') throw new Error(`Plan ${planId} must be a deprecate plan to hard-delete after retention`);
+  const executedAt = Date.parse(plan.executed?.timestamp ?? plan.planned.timestamp);
+  const retentionUntil = Number.isFinite(executedAt) ? executedAt + retentionDays * 86_400_000 : Number.NaN;
+  if (Number.isNaN(retentionUntil) || Date.now() < retentionUntil) {
+    const after = Number.isNaN(retentionUntil) ? 'an executed timestamp' : new Date(retentionUntil).toISOString();
+    throw new Error(`Retention period has not elapsed; deletion is allowed after ${after}`);
+  }
+  const loaded = await loadMemory(target);
+  const record = loaded.records.find((item) => item.memoryId === plan.memoryId || item.externalId === plan.externalId);
+  if (!record) throw new Error(`Memory record not found for plan ${planId}: ${plan.memoryId}`);
+  if (record.contentHash !== plan.expectedSourceHash) throw new Error(`Compare-and-swap failed: source hash changed since planning. Expected ${plan.expectedSourceHash}, actual ${record.contentHash}`);
+  const marker: HardDeleteMarker = {
+    memoryId: plan.memoryId, externalId: plan.externalId, contentHash: record.contentHash, planId,
+    deletedAt: new Date().toISOString(), actor, reason
+  };
+  await appendHardDeleteMarker(target, marker);
+  plan.state = 'deleted_after_retention';
+  plan.deletedAfterRetention = { actor, reason, timestamp: new Date().toISOString(), expectedSourceHash: record.contentHash };
+  await writeRemediation(target, file);
+  return plan;
+}
+
+async function appendHardDeleteMarker(target: string, marker: HardDeleteMarker): Promise<void> {
+  const path = join(remediationDir(target), 'hard-deleted.jsonl');
+  await mkdir(dirname(path), { recursive: true });
+  await appendFile(path, `${JSON.stringify(marker)}\n`, { encoding: 'utf8', mode: 0o600 });
 }
 
 export async function rejectRemediation(target: string, planId: string, actor: string, reason: string): Promise<RemediationPlan> {

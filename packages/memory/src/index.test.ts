@@ -163,6 +163,42 @@ describe('sharper memory detectors', () => {
     expect(stale.find((item) => item.metadata.externalId === 'ttl')?.metadata.ttlDays).toBe(30);
   });
 
+  it('raises corroboration when independent sources agree on the same entity value', async () => {
+    const report = await auditWith([
+      { id: 'web', content: 'the incident cause is deploy misconfiguration', type: 'semantic', created_at: '2026-08-01T00:00:00Z', source_kind: 'web_document', source_uri: 'https://a.invalid/post' },
+      { id: 'email', content: 'the incident cause is deploy misconfiguration', type: 'semantic', created_at: '2026-08-01T00:00:00Z', source_kind: 'email', source_uri: 'imap://team/inbox' },
+      { id: 'doc', content: 'the incident cause is deploy misconfiguration', type: 'semantic', created_at: '2026-08-01T00:00:00Z', source_kind: 'document', source_uri: 'file:///reports/postmortem.md' },
+      { id: 'lone', content: 'the staging region is ap-southeast-1', type: 'semantic', created_at: '2026-08-01T00:00:00Z', source_kind: 'manual', source_uri: 'manual://ops' }
+    ]);
+    expect(report.assessments).toHaveLength(4);
+    // Three independent sources agreeing on the incident cause: corroboration 100.
+    expect(report.assessments.filter((item) => item.corroboration === 100)).toHaveLength(3);
+    // The single-source manual fact stays at the default.
+    expect(report.assessments.some((item) => item.corroboration === 25)).toBe(true);
+  });
+
+  it('keeps a content-hash duplicate at the copy-level corroboration, not an independent witness', async () => {
+    const report = await auditWith([
+      { id: 'orig', content: 'the release channel is stable', type: 'semantic', created_at: '2026-08-01T00:00:00Z', source_kind: 'manual', source_uri: 'manual://one' },
+      { id: 'copy', content: 'the release channel is stable', type: 'semantic', created_at: '2026-08-01T00:00:00Z', source_kind: 'manual', source_uri: 'manual://one' }
+    ]);
+    const corroboration = report.assessments.map((item) => item.corroboration);
+    expect(corroboration).toEqual([40, 40]);
+  });
+
+  it('anchors staleness on the newer of created/modified time (source refresh)', async () => {
+    const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
+    const report = await auditWith([
+      { id: 'refreshed', content: 'the vendor tier is gold', type: 'semantic', created_at: daysAgo(200), modified_at: daysAgo(2), source_kind: 'manual' },
+      { id: 'untouched', content: 'the release cadence is quarterly', type: 'semantic', created_at: daysAgo(200), source_kind: 'manual' },
+      { id: 'updated-only', content: 'the office address is set', type: 'semantic', updated_at: daysAgo(1), source_kind: 'manual' }
+    ]);
+    const stale = report.findings.filter((item) => item.ruleId === 'AS-ME-005');
+    expect(stale.map((item) => item.metadata.externalId)).toEqual(['untouched']);
+    expect(report.findings.some((item) => item.ruleId === 'AS-ME-006' && item.metadata.externalId === 'updated-only')).toBe(false);
+    expect(report.findings.some((item) => item.ruleId === 'AS-ME-006' && item.metadata.externalId === 'untouched')).toBe(false);
+  });
+
   it('suppresses the stale finding for a record superseded by a newer fact', async () => {
     const report = await auditWith([
       { id: 'old', content: 'project deadline is january', type: 'semantic', created_at: '2026-01-01T00:00:00Z', source_kind: 'manual' },

@@ -160,6 +160,7 @@ export function createPostgresAdapter(driver: PostgresDriver, options: MemoryAda
           ...row,
           content: row[contentColumn],
           created_at: options.createdAtColumn ? row[assertIdentifier(options.createdAtColumn, 'created-at-column')] : row.created_at,
+          modified_at: options.updatedAtColumn ? row[assertIdentifier(options.updatedAtColumn, 'updated-at-column')] : row.updated_at,
           source: options.sourceColumn ? row[assertIdentifier(options.sourceColumn, 'source-column')] : row.source
         }, 'postgres', adapter.target, String(row[idColumn] ?? `${request.cursor ?? ''}:${index}`), `postgres://${options.database ?? ''}/${table}`));
         const last = records.at(-1);

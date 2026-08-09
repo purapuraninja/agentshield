@@ -6,13 +6,15 @@ import {
   type MemoryAuditReport, type ScanReport, type Severity
 } from '@agentshield/core';
 import {
-  addBaselineSuppressions, createBaseline, diffReports, evaluatePolicy, getRule, loadBaseline,
-  loadPolicy, pruneExpiredSuppressions, saveBaseline, scanTarget, simulatePolicy, staticRules,
-  validateBaseline, type StaticRule
+  activatePolicyVersion, addBaselineSuppressions, approvePolicyException, createBaseline, diffReports,
+  evaluatePolicy, evaluatePolicyWithExceptions, getRule, listPolicyExceptions, listPolicyVersions,
+  loadBaseline, loadPolicy, loadStoredPolicy, pruneExpiredSuppressions, publishPolicyVersion,
+  rejectPolicyException, requestPolicyException, rollbackPolicyVersion, saveBaseline, scanTarget,
+  simulatePolicy, staticRules, validateBaseline, type PolicyExceptionTarget, type StaticRule
 } from '@agentshield/scanner';
 import { renderAgentBom, renderHtml, renderMemoryAgentBom, renderMemoryEvidenceBundle, renderMemoryHtml, renderMemorySarif, renderSarif } from '@agentshield/reports';
 import { auditMemory, classifyMemoryTypes, getMemoryRule, listQuarantine, memoryRules, quarantineMemory, reconcileMemoryInventory, restoreMemory, type AuditOptions,
-  planRemediation, approveRemediation, executeRemediation, rollbackRemediation, rejectRemediation, listRemediationPlans, getRemediationPlan } from '@agentshield/memory';
+  planRemediation, approveRemediation, executeRemediation, rollbackRemediation, rejectRemediation, expungeRemediation, listRemediationPlans, getRemediationPlan } from '@agentshield/memory';
 import { EventStore, buildEvidenceGraph, createRuntimeEvent } from '@agentshield/runtime';
 import {
   buildRulepack, deserializeRules, generateRulepackKeyPair, installRulepack, loadRulepackBundle,
@@ -244,6 +246,86 @@ policy.command('simulate <policy> <reports...>').description('Evaluate a policy 
     ].join('\n'));
     if (options.failOnBlock && simulation.distribution.block) process.exitCode = 2;
   });
+policy.command('publish <policy>').description('Publish a policy as an immutable version (optionally activate after a historical simulation)')
+  .requiredOption('--actor <name>').option('--reason <text>', 'publish reason', 'published')
+  .option('--activate', 'activate this version immediately')
+  .option('--reports <files...>', 'historical JSON reports to simulate against before activation')
+  .option('--json', 'JSON output')
+  .action(async (policyPath, options) => {
+    const policy = await loadPolicy(policyPath);
+    const reports = options.reports ? await Promise.all((options.reports as string[]).map(readScanReport)) : undefined;
+    const result = await publishPolicyVersion(policyPath, policy, options.actor, {
+      reason: options.reason, activate: options.activate === true, reports
+    });
+    await emit(options.json ? safeJson(result) : [
+      `Published ${result.version.versionId} (${result.version.state})`, `Content: ${result.version.contentHash}`,
+      `Simulation: ${result.simulation.reports} report(s), block=${result.simulation.distribution.block}`
+    ].join('\n'));
+  });
+policy.command('versions <policy>').description('List published policy versions and the active pointer').option('--json', 'JSON output')
+  .action(async (policyPath, options) => {
+    const listing = await listPolicyVersions(policyPath);
+    await emit(options.json ? safeJson(listing) : [
+      `Current: ${listing.currentVersionId || '(none)'}`, '',
+      ...listing.versions.map((version) => `${version.state.toUpperCase().padEnd(9)} ${version.versionId}  ${version.publishedBy} ${version.publishedAt}${version.versionId === listing.currentVersionId ? '  [current]' : ''}`)
+    ].join('\n'));
+  });
+policy.command('activate <policy> <versionId>').description('Activate a published policy version (retires the current one)')
+  .requiredOption('--actor <name>').option('--reason <text>', 'activation reason', 'activated')
+  .action(async (policyPath, versionId, options) => {
+    const version = await activatePolicyVersion(policyPath, versionId, options.actor, options.reason);
+    await emit(`Activated ${version.versionId}; ${version.reason}`);
+  });
+policy.command('rollback <policy>').description('Activate the highest published version below the current one').requiredOption('--actor <name>')
+  .option('--reason <text>', 'rollback reason', 'rolled back').action(async (policyPath, options) => {
+    const version = await rollbackPolicyVersion(policyPath, options.actor, options.reason);
+    if (!version) throw new Error('Nothing to roll back to');
+    await emit(`Rolled back to ${version.versionId}; ${version.reason}`);
+  });
+policy.command('check-active <report> <policy>').description('Evaluate a report against the stored policy version with approved exceptions applied')
+  .option('--json', 'JSON output')
+  .action(async (reportPath, policyPath, options) => {
+    const report = await readScanReport(reportPath);
+    const stored = await loadStoredPolicy(policyPath);
+    const policy = stored ?? await loadPolicy(policyPath);
+    const exceptions = await listPolicyExceptions(policyPath);
+    const decision = evaluatePolicyWithExceptions(report, policy, exceptions);
+    await emit(options.json ? safeJson(decision) : `Decision: ${decision.action}\n${decision.reasons.join('\n')}`);
+    if (decision.action === 'block') process.exitCode = 2;
+    else if (decision.action === 'require_review') process.exitCode = 3;
+  });
+const exceptions = policy.command('exception').description('Request, approve, reject, and list policy exceptions');
+exceptions.command('request <policy>').description('Request an exception for a rule or permission')
+  .requiredOption('--actor <name>').requiredOption('--reason <text>').requiredOption('--owner <name>')
+  .option('--rule-id <id>', 'suppress findings matching this rule')
+  .option('--permission <resource.action>', 'suppress a declared permission, e.g. filesystem.write')
+  .requiredOption('--expires-in-days <days>', 'validity in days')
+  .action(async (policyPath, options) => {
+    if (!options.ruleId && !options.permission) throw new Error('Provide --rule-id or --permission');
+    const target: PolicyExceptionTarget = options.permission
+      ? { kind: 'permission', resource: options.permission.split('.')[0] ?? '', action: options.permission.split('.').slice(1).join('.') }
+      : { kind: 'rule', ruleId: options.ruleId };
+    const expiresAt = new Date(Date.now() + exceptionDays(options.expiresInDays) * 86_400_000).toISOString();
+    const record = await requestPolicyException(policyPath, { target, reason: options.reason, owner: options.owner, expiresAt }, options.actor);
+    await emit(`Requested ${record.exceptionId} (status: ${record.status})`);
+  });
+exceptions.command('approve <policy> <exceptionId>').description('Approve a requested exception (requires a different actor than the requester)')
+  .requiredOption('--actor <name>').option('--reason <text>', 'approval note', 'approved')
+  .action(async (policyPath, exceptionId, options) => {
+    const record = await approvePolicyException(policyPath, exceptionId, options.actor, options.reason);
+    await emit(`Approved ${record.exceptionId} by ${record.approvedBy}`);
+  });
+exceptions.command('reject <policy> <exceptionId>').description('Reject a requested exception')
+  .requiredOption('--actor <name>').requiredOption('--reason <text>')
+  .action(async (policyPath, exceptionId, options) => {
+    const record = await rejectPolicyException(policyPath, exceptionId, options.actor, options.reason);
+    await emit(`Rejected ${record.exceptionId}: ${record.rejectionReason}`);
+  });
+exceptions.command('list <policy>').description('List all exception records').option('--json', 'JSON output')
+  .action(async (policyPath, options) => {
+    const records = await listPolicyExceptions(policyPath);
+    await emit(options.json ? safeJson(records) : (records.length ? records.map((item) => `${item.status.toUpperCase().padEnd(9)} ${item.exceptionId}  ${item.target.kind}=${String(item.target.ruleId ?? item.target.resource)}  owner ${item.owner}  expires ${item.expiresAt}`).join('\n') : 'No exceptions.'));
+  });
 
 program.command('report <input>').description('Convert a canonical JSON report').requiredOption('-f, --format <format>', 'html, sarif, or agentbom').option('-o, --output <path>')
   .action(async (input, options) => {
@@ -331,6 +413,12 @@ function baselineDays(value: string): number {
   return days;
 }
 
+function exceptionDays(value: string): number {
+  const days = Number(value);
+  if (!Number.isInteger(days) || days < 1 || days > 3650) throw new Error('--expires-in-days must be an integer between 1 and 3650');
+  return days;
+}
+
 function baselineSeverity(value?: string): Severity | undefined {
   if (!value) return;
   if (!(value in severityRank)) throw new Error('--minimum-severity must be info, low, medium, high, or critical');
@@ -343,7 +431,7 @@ memory.command('audit <target>').description('Read-only memory audit')
   .option('--privacy <mode>', 'none, secrets, pii-secrets, or metadata-only', 'pii-secrets')
   .option('--no-cache', 'disable the local incremental assessment cache')
   .option('--page-size <count>', 'inventory records requested per adapter page', '500')
-  .option('--table <name>').option('--id-column <name>').option('--content-column <name>').option('--created-at-column <name>').option('--source-column <name>')
+  .option('--table <name>').option('--id-column <name>').option('--content-column <name>').option('--created-at-column <name>').option('--updated-at-column <name>').option('--source-column <name>')
   .action(async (target, options) => {
     const adapterOptions = memoryOptions(options); const report = await auditMemory(target, adapterOptions);
     const format = options.format as MemoryFormat;
@@ -357,7 +445,7 @@ memory.command('audit <target>').description('Read-only memory audit')
   });
 memory.command('quarantine <target> <memoryId>').description('Quarantine a record locally without deleting its source')
   .requiredOption('--actor <name>').requiredOption('--reason <text>')
-  .option('--table <name>').option('--id-column <name>').option('--content-column <name>')
+  .option('--table <name>').option('--id-column <name>').option('--content-column <name>').option('--updated-at-column <name>')
   .action(async (target, memoryId, options) => emit(safeJson(await quarantineMemory(target, memoryId, options.actor, options.reason, memoryOptions(options)))));
 memory.command('restore <target> <memoryId>').description('Restore a quarantined record').requiredOption('--actor <name>').requiredOption('--reason <text>')
   .action(async (target, memoryId, options) => emit(safeJson(await restoreMemory(target, memoryId, options.actor, options.reason))));
@@ -375,6 +463,17 @@ remediation.command('rollback <target> <planId>').description('Reverse an execut
   .action(async (target, planId, options) => emit(safeJson(await rollbackRemediation(target, planId, options.actor, options.reason))));
 remediation.command('reject <target> <planId>').description('Reject a planned or approved plan').requiredOption('--actor <name>').requiredOption('--reason <text>')
   .action(async (target, planId, options) => emit(safeJson(await rejectRemediation(target, planId, options.actor, options.reason))));
+remediation.command('expunge <target> <planId>').description('Hard-delete an executed deprecate plan after retention (opt-in only)')
+  .requiredOption('--actor <name>').requiredOption('--reason <text>')
+  .option('--retention-days <days>', 'minimum days since execution', '30')
+  .option('--enable-hard-delete', 'explicit opt-in; hard delete is disabled by default')
+  .action(async (target, planId, options) => {
+    const plan = await expungeRemediation(target, planId, options.actor, options.reason, {
+      retentionDays: Number(options.retentionDays),
+      enableHardDelete: options.enableHardDelete === true
+    });
+    await emit(safeJson(plan));
+  });
 remediation.command('list <target>').description('List remediation plans').action(async (target) => emit(safeJson(await listRemediationPlans(target))));
 remediation.command('get <target> <planId>').description('Show a single remediation plan').action(async (target, planId) => emit(safeJson(await getRemediationPlan(target, planId) ?? { error: `Plan not found: ${planId}` })));
 memory.command('reconcile <target>').description('Reconcile audited inventory against the source store with documented exclusions').action(async (target) => emit(safeJson(await reconcileMemoryInventory(target, memoryOptions({})))));
@@ -388,6 +487,7 @@ function memoryOptions(options: Record<string, string | boolean | undefined>): A
     idColumn: options.idColumn as string | undefined,
     contentColumn: options.contentColumn as string | undefined,
     createdAtColumn: options.createdAtColumn as string | undefined,
+    updatedAtColumn: options.updatedAtColumn as string | undefined,
     sourceColumn: options.sourceColumn as string | undefined,
     cache: options.cache !== false,
     pageSize

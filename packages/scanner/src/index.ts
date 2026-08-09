@@ -31,6 +31,13 @@ export {
   buildProvenanceIndex, isProvenanceFile, provenanceForPath,
   type ProvenanceIndex, type ProvenanceInput
 } from './provenance.js';
+export {
+  activatePolicyVersion, approvePolicyException, evaluatePolicyWithExceptions, listPolicyExceptions,
+  listPolicyVersions, loadStoredPolicy, publishPolicyVersion, readPolicyStore, rejectPolicyException,
+  requestPolicyException, rollbackPolicyVersion,
+  type PolicyException, type PolicyExceptionStatus, type PolicyExceptionTarget, type PolicySimulationSummary,
+  type PolicyStoreFile, type PolicyVersion, type PolicyVersionState
+} from './policy-store.js';
 
 const SUPPORTED_EXTENSIONS = new Set([
   '.md', '.mdx', '.json', '.jsonl', '.yaml', '.yml', '.toml', '.js', '.mjs', '.cjs', '.ts', '.tsx',

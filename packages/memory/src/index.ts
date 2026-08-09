@@ -8,6 +8,7 @@ import {
 } from '@agentshield/core';
 import { normalizeRecord } from './normalize.js';
 import { createPgDriver, createPostgresAdapter } from './postgres.js';
+import { withConnectorResilience, type RateLimitPolicy, type RetryPolicy } from './connector.js';
 
 export type PrivacyMode = 'none' | 'secrets' | 'pii-secrets' | 'metadata-only';
 export interface MemoryAdapterOptions {
@@ -15,6 +16,7 @@ export interface MemoryAdapterOptions {
   idColumn?: string;
   contentColumn?: string;
   createdAtColumn?: string;
+  updatedAtColumn?: string;
   sourceColumn?: string;
   pageSize?: number;
   /** PostgreSQL-only: connection string or individual connection options. */
@@ -26,6 +28,10 @@ export interface MemoryAdapterOptions {
   password?: string;
   ssl?: boolean;
   statementTimeoutMs?: number;
+  /** Retry transient read failures with exponential backoff (external connectors only). */
+  retry?: RetryPolicy | false;
+  /** Enforce a token-bucket request rate on adapter reads (external connectors only). */
+  rateLimit?: RateLimitPolicy | false;
 }
 export interface AuditOptions extends MemoryAdapterOptions {
   privacyMode?: PrivacyMode;
@@ -281,6 +287,7 @@ async function loadSqlite(path: string, options: MemoryAdapterOptions): Promise<
     const rows = database.prepare(`SELECT * FROM "${table}"`).all() as Array<Record<string, unknown>>;
     const records = rows.map((row, index) => normalizeRecord({
       ...row, content: row[contentColumn], created_at: options.createdAtColumn ? row[assertIdentifier(options.createdAtColumn, 'created-at-column')] : row.created_at,
+      modified_at: options.updatedAtColumn ? row[assertIdentifier(options.updatedAtColumn, 'updated-at-column')] : row.updated_at,
       source: options.sourceColumn ? row[assertIdentifier(options.sourceColumn, 'source-column')] : row.source
     }, 'sqlite', path, String(row[idColumn] ?? index), `sqlite://${normalizePath(resolve(path))}/${table}`));
     return { adapter: 'sqlite', records, errors };
@@ -425,10 +432,12 @@ export async function reconcileMemoryInventory(target: string, options: MemoryAd
   const audited = report.inventory.audited;
   const quarantined = report.inventory.quarantined;
   const failed = report.inventory.failed;
+  const hardDeleted = (await readHardDeleted(target)).length;
   const exclusions: Array<{ kind: string; count: number; note: string }> = [];
   if (quarantined) exclusions.push({ kind: 'quarantined', count: quarantined, note: 'Quarantined records are excluded from detector assessment.' });
+  if (hardDeleted) exclusions.push({ kind: 'hard-deleted', count: hardDeleted, note: 'Records hard-deleted after retention by the opt-in workflow.' });
   if (failed) exclusions.push({ kind: 'failed', count: failed, note: 'Records that failed adapter parsing and were not assessed.' });
-  const accounted = audited + quarantined + failed;
+  const accounted = audited + quarantined + hardDeleted + failed;
   const unaccounted = Math.max(0, sourceTotal - accounted);
   return { adapter: loaded.adapter, sourceTotal, audited, quarantined, failed, unaccounted, reconciled: unaccounted === 0, exclusions };
 }
@@ -498,11 +507,14 @@ async function loadFromAdapter(adapter: MemoryAdapter, pageSize?: number): Promi
  * file/JSON/JSONL/Markdown/SQLite adapters.
  */
 async function createAdapterForTarget(target: string, options: MemoryAdapterOptions = {}): Promise<MemoryAdapter> {
+  let adapter: MemoryAdapter;
   if (/^postgres(?:ql)?:\/\//i.test(target)) {
     const driver = await createPgDriver({ connectionString: target, ...options });
-    return createPostgresAdapter(driver, options);
+    adapter = createPostgresAdapter(driver, options);
+  } else {
+    adapter = createMemoryAdapter(target, options);
   }
-  return createMemoryAdapter(target, options);
+  return withConnectorResilience(adapter, { retry: options.retry, rateLimit: options.rateLimit });
 }
 
 export async function loadMemory(target: string, options: MemoryAdapterOptions = {}): Promise<LoadResult> {
@@ -624,6 +636,10 @@ function jaccard(a: Set<string>, b: Set<string>): number {
   return intersection / (a.size + b.size - intersection);
 }
 
+function sourceIdentity(record: MemoryRecord): string {
+  return `${record.source.kind}\u0000${record.source.uri}`;
+}
+
 function entityValue(content: string): { entity: string; value: string } | undefined {
   const cleaned = content.replaceAll(/[*_`#]/g, '').trim();
   const match = /^(?:the\s+)?([\p{L}\p{N}][\p{L}\p{N} _-]{1,60}?)\s+(?:is|are|=|:)\s+([^.!?\n]{1,120})/iu.exec(cleaned);
@@ -672,7 +688,11 @@ interface EntityFact {
 }
 
 function factWindow(record: MemoryRecord): { from: number; until: number } {
-  const from = record.validFrom ? Date.parse(record.validFrom) : record.createdAt ? Date.parse(record.createdAt) : Number.NaN;
+  // A record refreshed in the source (modifiedAt) is a newer fact even when its created timestamp is
+  // old, so supersession and conflict ordering must use the same anchor as the freshness detector.
+  const created = record.createdAt ? Date.parse(record.createdAt) : Number.NaN;
+  const modified = record.modifiedAt ? Date.parse(record.modifiedAt) : Number.NaN;
+  const from = record.validFrom ? Date.parse(record.validFrom) : Number.isFinite(modified) ? modified : created;
   const until = record.validUntil ? Date.parse(record.validUntil) : Number.POSITIVE_INFINITY;
   return { from: Number.isFinite(from) ? from : Number.NEGATIVE_INFINITY, until };
 }
@@ -765,8 +785,12 @@ function assessRecord(record: MemoryRecord, privacyMode: PrivacyMode, now: numbe
   assessment: TrustAssessment;
 } {
   const findings: Finding[] = [];
+  // A record refreshed in the source (modifiedAt) is anchored at the newer of created/modified, so a
+  // long-lived fact that was just updated is not falsely reported stale.
   const created = record.createdAt ? Date.parse(record.createdAt) : Number.NaN;
-  const ageDays = Number.isFinite(created) ? Math.max(0, (now - created) / 86_400_000) : undefined;
+  const modified = record.modifiedAt ? Date.parse(record.modifiedAt) : Number.NaN;
+  const anchored = [created, modified].filter(Number.isFinite).sort((a, b) => b - a)[0];
+  const ageDays = anchored !== undefined ? Math.max(0, (now - anchored) / 86_400_000) : undefined;
   const expired = record.validUntil ? Date.parse(record.validUntil) < now : false;
   const policy = freshnessPolicy(record, now);
   const stale = ageDays !== undefined && ageDays > policy.ttlDays + policy.graceDays;
@@ -782,8 +806,8 @@ function assessRecord(record: MemoryRecord, privacyMode: PrivacyMode, now: numbe
   if (encoded.htmlEntity) encodedEncodings.push('html-entity');
   const encodedHit = encodedEncodings.length > 0;
   if (expired) findings.push(finding('AS-ME-004', 'Expired memory', 'The record is past its explicit validity date.', 'high', record, `validUntil=${record.validUntil}`, 'Quarantine or refresh the record from its authoritative source.'));
-  else if (stale) findings.push(finding('AS-ME-005', 'Stale memory', `The record is approximately ${Math.floor(ageDays)} days old and past its ${policy.ttlDays}-day freshness window.`, policy.volatility === 'high' ? 'high' : 'medium', record, `createdAt=${record.createdAt}`, 'Verify the fact and set an explicit review date or TTL.', { ttlDays: policy.ttlDays, volatility: policy.volatility, reviewDueAt: policy.reviewDueAt }));
-  if (!record.createdAt) findings.push(finding('AS-ME-006', 'Missing memory timestamp', 'Freshness cannot be established without a creation timestamp.', 'low', record, 'createdAt is absent', 'Add a creation timestamp and validity window at ingestion.'));
+  else if (stale) findings.push(finding('AS-ME-005', 'Stale memory', `The record is approximately ${Math.floor(ageDays)} days old and past its ${policy.ttlDays}-day freshness window.`, policy.volatility === 'high' ? 'high' : 'medium', record, `createdAt=${record.createdAt}${record.modifiedAt ? ` modifiedAt=${record.modifiedAt}` : ''}`, 'Verify the fact and set an explicit review date or TTL.', { ttlDays: policy.ttlDays, volatility: policy.volatility, reviewDueAt: policy.reviewDueAt, sourceModifiedAt: record.modifiedAt }));
+  if (!record.createdAt && !record.modifiedAt) findings.push(finding('AS-ME-006', 'Missing memory timestamp', 'Freshness cannot be established without a creation or modification timestamp.', 'low', record, 'createdAt and modifiedAt are absent', 'Add a creation timestamp and validity window at ingestion.'));
   if (!record.source.uri || record.source.kind === 'unknown') findings.push(finding('AS-ME-007', 'Weak memory provenance', 'The source is missing or not attributable.', 'medium', record, 'source provenance is incomplete', 'Record the source URI, capture time, and creating component.'));
   if (secrets) findings.push(finding('AS-ME-008', 'Secret material in memory', 'The record contains credential-like material.', 'critical', record, applyPrivacy(record.content, 'secrets', piiPatterns), 'Rotate any exposed credential and store only a secret reference, never the value.'));
   if (pii) findings.push(finding('AS-ME-009', 'Personal data in memory', 'The record contains a personal-data pattern.', 'high', record, applyPrivacy(record.content, 'pii-secrets', piiPatterns), 'Minimize or tokenize personal data and apply an explicit retention policy.', { locales: options.piiLocales ?? DEFAULT_PII_LOCALES }));
@@ -844,7 +868,25 @@ function assess(records: MemoryRecord[], privacyMode: PrivacyMode, cache: Assess
   // Conflict requires different values AND overlapping validity windows; a newer fact for the same
   // entity supersedes an older one, which also suppresses the stale finding for the old record.
   const supersededBy = new Map<string, string>();
+  // Multi-source corroboration: an entity fact is corroborated when independent sources agree on the
+  // same value. Two agreeing sources raise corroboration to 75, three or more to 100. A content-hash
+  // duplicate is a copy, not an independent witness, so it only reaches 40.
+  const corroboratedBy = new Map<string, number>();
   for (const [entity, facts] of entities) {
+    const byValue = new Map<string, EntityFact[]>();
+    for (const fact of facts) {
+      const group = byValue.get(fact.value) ?? [];
+      group.push(fact);
+      byValue.set(fact.value, group);
+    }
+    for (const group of byValue.values()) {
+      if (group.length < 2) continue;
+      const sources = new Set(group.map((item) => sourceIdentity(item.record)));
+      const independent = sources.size;
+      if (independent < 2) continue;
+      const score = independent >= 3 ? 100 : 75;
+      for (const item of group) corroboratedBy.set(item.record.memoryId, Math.max(corroboratedBy.get(item.record.memoryId) ?? 0, score));
+    }
     const distinct = new Set(facts.map((item) => item.value));
     if (distinct.size > 1) {
       for (let index = 0; index < facts.length; index++) {
@@ -875,9 +917,11 @@ function assess(records: MemoryRecord[], privacyMode: PrivacyMode, cache: Assess
       ? result.findings.filter((item) => !(item.ruleId === 'AS-ME-005'))
       : result.findings;
     findings.push(...recordFindings);
+    const corroborated = corroboratedBy.get(record.memoryId);
+    const duplicate = (hashes.get(record.contentHash)?.length ?? 0) > 1 ? 40 : 0;
     return {
       ...result.assessment,
-      corroboration: (hashes.get(record.contentHash)?.length ?? 0) > 1 ? 75 : 25
+      corroboration: corroborated ?? Math.max(duplicate, 25)
     };
   });
   return { findings, assessments };
@@ -893,6 +937,25 @@ async function readQuarantine(target: string): Promise<QuarantineFile> {
   catch { return { version: 1, entries: [] }; }
 }
 
+/**
+ * Reads the append-only hard-delete markers written by the opt-in retention workflow, deduplicated
+ * by plan id so a retried expunge can never double-count or double-exclude a record.
+ */
+async function readHardDeleted(target: string): Promise<Array<{ memoryId: string; contentHash: string }>> {
+  try {
+    const seen = new Set<string>();
+    const markers: Array<{ memoryId: string; contentHash: string }> = [];
+    for (const line of (await readFile(join(dataDirectory(target), 'hard-deleted.jsonl'), 'utf8')).split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      const parsed = JSON.parse(line) as { memoryId: string; contentHash: string; planId: string };
+      if (seen.has(parsed.planId)) continue;
+      seen.add(parsed.planId);
+      markers.push({ memoryId: parsed.memoryId, contentHash: parsed.contentHash });
+    }
+    return markers;
+  } catch { return []; }
+}
+
 export async function auditMemory(target: string, options: AuditOptions = {}): Promise<MemoryAuditReport> {
   const startedAt = new Date().toISOString();
   const privacyMode = options.privacyMode ?? 'pii-secrets';
@@ -900,7 +963,11 @@ export async function auditMemory(target: string, options: AuditOptions = {}): P
   const loaded = await loadFromAdapter(adapter, options.pageSize);
   const quarantine = await readQuarantine(target);
   const quarantined = new Set(quarantine.entries.filter((item) => item.status === 'quarantined').map((item) => item.memoryId));
-  const records = options.includeQuarantined ? loaded.records : loaded.records.filter((item) => !quarantined.has(item.memoryId));
+  const hardDeleted = await readHardDeleted(target);
+  const hardDeletedKeys = new Set(hardDeleted.map((item) => `${item.memoryId}\0${item.contentHash}`));
+  const records = options.includeQuarantined ? loaded.records : loaded.records
+    .filter((item) => !quarantined.has(item.memoryId))
+    .filter((item) => !hardDeletedKeys.has(`${item.memoryId}\0${item.contentHash}`));
   const checkpoint = sha256(records
     .map((record) => `${record.externalId}\0${record.contentHash}\0${sha256(JSON.stringify(record))}`)
     .sort()
@@ -980,7 +1047,8 @@ export async function listQuarantine(target: string): Promise<Array<Omit<Quarant
 
 export {
   planRemediation, approveRemediation, executeRemediation, rollbackRemediation, rejectRemediation,
-  listRemediationPlans, getRemediationPlan,
-  type RemediationPlan, type RemediationState, type RemediationAction, type RemediationStage, type PlanOptions
+  expungeRemediation, listRemediationPlans, getRemediationPlan,
+  type HardDeleteMarker, type RemediationPlan, type RemediationState, type RemediationAction, type RemediationStage, type PlanOptions
 } from './remediation.js';
 export { createPgDriver, createPostgresAdapter, type PostgresDriver } from './postgres.js';
+export { retryWithBackoff, TokenBucket, withConnectorResilience, type ConnectorResilienceOptions, type RateLimitPolicy, type RetryPolicy } from './connector.js';

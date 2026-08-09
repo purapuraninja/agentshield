@@ -121,6 +121,7 @@ export const memoryRecordSchema = z.object({
   source: memorySourceSchema,
   createdBy: z.string().optional(),
   createdAt: z.string().optional(),
+  modifiedAt: z.string().optional(),
   validFrom: z.string().nullable().optional(),
   validUntil: z.string().nullable().optional(),
   confidence: z.number().min(0).max(1).default(0.5),

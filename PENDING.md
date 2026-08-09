@@ -137,9 +137,12 @@ Terakhir diperbarui: 2026-08-09.
 
 - [x] Baseline mempunyai command create/add/validate/prune, atomic persistence, duplicate detection,
   serta active/expired status.
-- [~] Policy v2 mendukung typed predicates, nested boolean expression, scope metadata,
-  deterministic trace, dan multi-report simulator; persisted version history serta exception
-  approval belum ada.
+- [x] Policy v2 mendukung typed predicates, nested boolean expression, scope metadata,
+  deterministic trace, dan multi-report simulator.
+- [x] Persisted immutable policy version history (`policy publish/versions/activate/rollback`) dengan
+  simulation terhadap historical reports sebelum aktivasi, plus exception approval workflow empat mata
+  (`policy exception request/approve/reject/list`) yang menyuppress finding/permission sebelum
+  evaluasi (`policy-store.ts` + `policy-store.test.ts`).
 - [x] Signed rulepack update command dan offline rulepack bundle (`rulepack build/install/rollback`
   dan file bundle `.rulepack.json` tunggal).
 - [x] Telemetry opt-in command, consent receipt, dan data preview (`agentshield telemetry
@@ -175,8 +178,10 @@ Terakhir diperbarui: 2026-08-09.
   `pg` lazy-import opsional, dan conformance suite dengan in-memory driver yang menolak statement
   write.
 - [ ] Satu vector database adapter pertama; keputusan produk masih diperlukan.
-- [~] Pagination, checkpoint, dan JSONL per-record failure isolation sudah formal; retry serta rate
-  limit untuk connector eksternal belum ada.
+- [x] Pagination, checkpoint, dan JSONL per-record failure isolation sudah formal.
+- [x] Connector resilience untuk store eksternal: retry dengan exponential backoff + jitter dan
+  token-bucket rate limit (`packages/memory/src/connector.ts`), di-wrap ke seluruh permukaan read
+  adapter via `retry`/`rateLimit` pada `MemoryAdapterOptions` (default off).
 - [~] Source-store total reconciliation dan documented exclusions (`memory reconcile` / `POST
   /v1/memory/reconcile`); connection credential guidance serta automated least-privilege validation
   belum ada.
@@ -212,13 +217,17 @@ Terakhir diperbarui: 2026-08-09.
 - [x] Freshness memakai policy per record: label `ttl:<n>` eksplisit, default per memory type
   (working/episodic/semantic/procedural), grace period, dan eskalasi severity untuk source volatile
   (web/email/dokumen). Fakta yang sudah disupersede oleh fakta lebih baru untuk entity yang sama
-  tidak lagi dilaporkan stale (`AS-ME-005`). Source modified time tetap belum dipakai.
+  tidak lagi dilaporkan stale (`AS-ME-005`). Source modified time (`modifiedAt`/`updated_at`,
+  `--updated-at-column`) dipakai sebagai jangkar umur record — record yang di-refresh di source
+  tidak lagi dilaporkan stale, dan `AS-ME-006` hanya bila created & modified keduanya absen.
 - [x] PII detector memakai locale packs `en-US` dan `id-ID` (SSN, NIK, NPWP, kartu, telepon) serta
   organization terms yang bisa dikonfigurasi via `AuditOptions.organizationTerms` (`AS-ME-009`).
 - [~] Poison detector kini mendeteksi hidden Unicode (`AS-ME-012`) dan instruksi tersembunyi dalam
   encoding base64/HTML entity (`AS-ME-013`), sejajar dengan `AS-SC-026`; policy conflict, provenance
   mismatch, dan indirect tool instruction secara menyeluruh belum tersedia.
-- [ ] Corroboration dari beberapa independent sources.
+- [x] Corroboration dari beberapa independent sources: fakta entity yang disetujui 2 source
+  independen mendapat corroboration 75, 3+ source mendapat 100; duplikat content-hash hanya
+  dihitung sebagai salinan (40), bukan saksi independen.
 - [ ] Optional LLM classifier dengan cited memory IDs, pinned evals, local-model option, dan label
   yang membedakan hasil model dari deterministic findings.
 - [ ] Conflict explorer API/UI.
@@ -255,7 +264,10 @@ Terakhir diperbarui: 2026-08-09.
 - [ ] Immutable memory version service.
 - [ ] Atomic batch mutation, partial-failure recovery.
 - [ ] Vector reindex dan source/index consistency verification.
-- [ ] Hard-delete-after-retention workflow; harus tetap disabled by default.
+- [x] Hard-delete-after-retention workflow (`remediation expunge`) dengan state
+  `deleted_after_retention`, marker append-only `hard-deleted.jsonl`, compare-and-swap source hash,
+  dan eksklusi dari audit/reconcile berikutnya. Wajib **opt-in** (`--enable-hard-delete`): tanpa
+  flag eksplisit selalu ditolak, dan retention period sejak eksekusi harus sudah lewat.
 
 ### Cara mengimplementasikan
 
