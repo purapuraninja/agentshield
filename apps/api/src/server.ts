@@ -3,7 +3,7 @@ import { dirname, join, resolve } from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import { createId, memoryAuditReportSchema, scanReportSchema } from '@agentshield/core';
-import { evaluatePolicy, scanTarget, staticRules, getRule, type PolicyFile } from '@agentshield/scanner';
+import { evaluatePolicy, scanInjectionText, scanTarget, staticRules, getRule, type PolicyFile } from '@agentshield/scanner';
 import { auditMemory, classifyMemoryTypes, getMemoryRule, listQuarantine, listRemediationPlans, memoryRules, planRemediation, approveRemediation, executeRemediation, rollbackRemediation, quarantineMemory, reconcileMemoryInventory, restoreMemory } from '@agentshield/memory';
 import { applyPersona, buildModelRequest, getPersona, listPersonaApplications, listPersonas, loadPersonaFile, modelRequestOptionsSchema, registerPersona, removePersona, verifyApplicationChain } from '@agentshield/persona';
 import { EventStore, createRuntimeEvent } from '@agentshield/runtime';
@@ -119,6 +119,17 @@ export async function buildServer(options: ApiOptions = {}): Promise<FastifyInst
     const { ruleId } = request.params as { ruleId: string };
     const rule = getRule(ruleId) ?? getMemoryRule(ruleId);
     return rule ? { data: { ...rule, kind: rule.id.startsWith('AS-ME') ? 'memory' : 'static' } } : reply.status(404).send({ error: { code: 'not_found', message: 'Rule not found', requestId: request.id } });
+  });
+
+  // Injection lab: runs the prompt-injection/jailbreak rule set against arbitrary pasted text.
+  // Detection-only — it never generates or executes the content under test.
+  app.post('/v1/injection/lab', async (request, reply) => {
+    const body = request.body as { text?: string };
+    if (typeof body?.text !== 'string' || !body.text.trim()) {
+      return reply.status(400).send({ error: { code: 'invalid_request', message: 'text is required', requestId: request.id } });
+    }
+    const findings = scanInjectionText(body.text);
+    return { data: { findings, detected: findings.length > 0 } };
   });
 
   app.get('/v1/memory-audits', async (request) => {

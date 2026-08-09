@@ -147,11 +147,11 @@ function makeFinding(rule: StaticRule, path: string, content: string, match: Reg
   };
 }
 
-function scanRules(path: string, content: string, rules: StaticRule[]): Finding[] {
+function scanRules(path: string, content: string, rules: StaticRule[], ignoreExtensions = false): Finding[] {
   const extension = extname(path).toLowerCase();
   const findings: Finding[] = [];
   for (const rule of rules) {
-    if (rule.extensions && !rule.extensions.includes(extension)) continue;
+    if (!ignoreExtensions && rule.extensions && !rule.extensions.includes(extension)) continue;
     for (const pattern of rule.patterns) {
       const flags = pattern.flags.replace('g', '');
       const matcher = new RegExp(pattern.source, flags);
@@ -408,6 +408,23 @@ function componentType(path: string, content: string): Component['type'] {
   if (['.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.py', '.sh', '.bash', '.zsh', '.ps1'].includes(extname(path).toLowerCase())) return 'script';
   if (['.json', '.yaml', '.yml', '.toml'].includes(extname(path).toLowerCase())) return 'config';
   return 'unknown';
+}
+
+const INJECTION_RULE_IDS = new Set(['AS-SC-016', 'AS-SC-017', 'AS-SC-026', 'AS-SC-028', 'AS-SC-029']);
+
+/**
+ * Runs the prompt-injection rule set against arbitrary text (no file extension, no parser).
+ * This is the detection path behind the dashboard Injection lab: paste any text and see which
+ * injection/jailbreak rules fire, with line-level evidence. Reuses the same rule engine as
+ * `scanTarget`, so behavior is identical to scanning a real file.
+ */
+export function scanInjectionText(text: string): Finding[] {
+  const content = normalizeByteOrderMark(text);
+  // Arbitrary pasted text has no file extension, so extension scoping is skipped (e.g. the
+  // invisible-Unicode detector is not limited to .md/.json/.yaml content). Only the
+  // prompt-injection/jailbreak rule set is applied.
+  const rules = staticRules.filter((rule) => INJECTION_RULE_IDS.has(rule.id));
+  return dedupeFindings(scanRules('lab', content, rules, true));
 }
 
 export async function scanTarget(target: string, options: ScanOptions = {}): Promise<ScanReport> {

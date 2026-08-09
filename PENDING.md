@@ -401,6 +401,10 @@ evaluasi lokal.
 ## 10. Dashboard dan product UX — P1
 
 - [~] Overview, scan form, findings, permission map, filtering, dan API connectivity tersedia.
+- [x] "Injection lab" view di dashboard (`/v1/injection/lab` + `scanInjectionText` di
+  `@agentshield/scanner`): paste teks sebarang → deteksi rule prompt-injection/jailbreak
+  (AS-SC-016/017/026/028/029) dengan evidence per rule; murni deteksi, tidak pernah membuat atau
+  mengeksekusi konten. Dilengkapi contoh sampel uji dan pengurutan hasil berdasarkan severity.
 - [ ] Projects/agents/scans history dan trend data.
 - [ ] Finding assignment, comments, lifecycle, exception, dan reviewer workflow.
 - [~] Memory inventory/health view, conflict explorer, poisoning review queue, dan perencanaan

@@ -3,6 +3,7 @@ import { Memory } from './Memory.js';
 import { RuntimeTraces } from './RuntimeTraces.js';
 import { Policies } from './Policies.js';
 import { Personas } from './Personas.js';
+import { InjectionLab } from './InjectionLab.js';
 import { apiErrorMessage, apiFetch, getToken, setToken } from './api.js';
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
@@ -27,7 +28,7 @@ const icons: Record<string, ReactNode> = {
 };
 export function Icon({ name, size = 18 }: { name: string; size?: number }) { return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{icons[name]}</svg>; }
 
-const nav: Array<[string, string]> = [['grid','Overview'], ['scan','Findings'], ['brain','Memory'], ['trace','Runtime traces'], ['mask','Personas'], ['policy','Policies']];
+const nav: Array<[string, string]> = [['grid','Overview'], ['scan','Findings'], ['alert','Injection lab'], ['brain','Memory'], ['trace','Runtime traces'], ['mask','Personas'], ['policy','Policies']];
 const severityOrder: Severity[] = ['critical', 'high', 'medium', 'low', 'info'];
 
 export function App() {
@@ -76,6 +77,7 @@ export function App() {
 
       {active === 'Overview' && <Overview report={report} counts={counts} onViewFindings={() => setActive('Findings')} />}
       {active === 'Findings' && <Findings report={report} />}
+      {active === 'Injection lab' && <InjectionLab />}
       {active === 'Memory' && <Memory />}
       {active === 'Runtime traces' && <RuntimeTraces />}
       {active === 'Personas' && <Personas />}
