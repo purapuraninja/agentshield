@@ -37,6 +37,7 @@ export function Personas() {
   const [applications, setApplications] = useState<PersonaApplication[]>([]);
   const [chain, setChain] = useState<{ valid: boolean; brokenAt?: string }>({ valid: true });
   const [definitionText, setDefinitionText] = useState(STARTER);
+  const [definitionFormat, setDefinitionFormat] = useState<'structured' | 'freeform'>('structured');
   const [registerActor, setRegisterActor] = useState('dashboard');
   const [selectedId, setSelectedId] = useState('');
   const [variableValues, setVariableValues] = useState<Record<string, string>>({});
@@ -90,15 +91,18 @@ export function Personas() {
     if (!definitionText.trim()) return;
     setBusy(true); setError(''); setMessage('');
     try {
+      // Free-form registration accepts any pasted text as the persona; structured registration
+      // expects a YAML/JSON definition.
+      const body: Record<string, unknown> = { definitionText, actor: registerActor.trim() || 'dashboard' };
+      if (definitionFormat === 'freeform') body.format = 'freeform';
       const response = await apiFetch('/v1/personas', {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ definitionText, actor: registerActor.trim() || 'dashboard' })
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
       });
       // Read the body only on success; on failure apiErrorMessage consumes it to surface the
       // server's message (reading json() twice throws and would replace it with the fallback).
       if (!response.ok) throw new Error(await apiErrorMessage(response, 'Registration failed'));
       const data = await response.json();
-      setMessage(`Registered ${data.data.id} v${data.data.version} (${data.data.name}).`);
+      setMessage(`Registered ${data.data.id} v${data.data.version} (${data.data.name}).${data.warnings?.length ? ` Advisory: ${data.warnings.length} language warning(s) — review before applying.` : ''}`);
       await refresh();
       setSelectedId(data.data.id);
     } catch (registerError) { setError(registerError instanceof Error ? registerError.message : String(registerError)); }
@@ -140,11 +144,16 @@ export function Personas() {
 
     <section className="content-grid">
       <article className="panel persona-panel">
-        <div className="section-head"><div><p className="overline">Register</p><h2>New persona</h2></div><span className="secondary">YAML or JSON</span></div>
+        <div className="section-head"><div><p className="overline">Register</p><h2>New persona</h2></div><span className="secondary">{definitionFormat === 'freeform' ? 'any text' : 'YAML or JSON'}</span></div>
+        <div className="format-toggle" role="group" aria-label="Definition format">
+          <button className={definitionFormat === 'structured' ? 'selected' : ''} onClick={() => { setDefinitionFormat('structured'); if (!definitionText.trim()) setDefinitionText(STARTER); setError(''); }}>Structured YAML/JSON</button>
+          <button className={definitionFormat === 'freeform' ? 'selected' : ''} onClick={() => { setDefinitionFormat('freeform'); if (definitionText.trim() === STARTER.trim()) setDefinitionText(''); setError(''); }}>Free text</button>
+        </div>
         <div className="field">
-          <label htmlFor="persona-definition">Definition</label>
+          <label htmlFor="persona-definition">{definitionFormat === 'freeform' ? 'Prompt text' : 'Definition'}</label>
           <textarea id="persona-definition" className="field-textarea" rows={10} value={definitionText}
-            onChange={(event) => setDefinitionText(event.target.value)} spellCheck={false} />
+            onChange={(event) => setDefinitionText(event.target.value)} spellCheck={false}
+            placeholder={definitionFormat === 'freeform' ? 'Paste any text — it becomes the persona. No YAML needed.' : 'id: support-engineer\nname: Support Engineer\nauthor: platform-team\nsystemPrompt: |\n  You are…'} />
         </div>
         <div className="persona-row">
           <div className="field"><label htmlFor="persona-register-actor">Actor</label>

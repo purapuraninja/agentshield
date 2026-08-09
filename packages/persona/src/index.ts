@@ -202,14 +202,10 @@ async function writePersonaStore(target: string, store: PersonaStoreFile): Promi
 }
 
 /**
- * Registers a persona. Content-addressable: registering identical content returns the existing
- * definition; changing behavior bumps the version so applied receipts stay unambiguous.
+ * Persists a validated persona into the content-addressed store. Identical content is returned as-is
+ * (idempotent); changing behavior bumps the version so applied receipts stay unambiguous.
  */
-export async function registerPersona(target: string, value: unknown, actor: string): Promise<PersonaDefinition> {
-  if (!actor.trim()) throw new Error('Persona registration requires a non-empty actor');
-  const validation = validatePersona(value);
-  if (!validation.valid) throw new Error(`Persona rejected: ${validation.issues.join('; ')}`);
-  const input = personaDefinitionSchema.parse(value);
+async function persistPersona(target: string, input: PersonaDefinition): Promise<PersonaDefinition> {
   const now = new Date().toISOString();
   const store = await readPersonaStore(target);
   const existing = store.personas.find((persona) => persona.id === input.id);
@@ -229,6 +225,55 @@ export async function registerPersona(target: string, value: unknown, actor: str
   store.personas.push(persona);
   await writePersonaStore(target, store);
   return persona;
+}
+
+/**
+ * Registers a persona. Content-addressable: registering identical content returns the existing
+ * definition; changing behavior bumps the version so applied receipts stay unambiguous.
+ */
+export async function registerPersona(target: string, value: unknown, actor: string): Promise<PersonaDefinition> {
+  if (!actor.trim()) throw new Error('Persona registration requires a non-empty actor');
+  const validation = validatePersona(value);
+  if (!validation.valid) throw new Error(`Persona rejected: ${validation.issues.join('; ')}`);
+  return persistPersona(target, personaDefinitionSchema.parse(value));
+}
+
+/**
+ * Builds a persona definition from arbitrary free-form text: the text becomes the whole system
+ * prompt, and id/name are derived so the operator can paste anything without YAML structure.
+ * The id is content-addressed (deterministic from the text), so pasting identical text registers
+ * the same persona instead of duplicating it.
+ */
+export function freeformPersonaDefinition(text: string, actor: string): PersonaDefinition {
+  const trimmed = text.trim();
+  const digest = sha256(trimmed).replace('sha256:', '').slice(0, 12);
+  const firstLine = trimmed.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? '';
+  return {
+    id: `persona-${digest}`,
+    name: firstLine.slice(0, 120) || 'Custom persona',
+    version: 1,
+    description: 'Free-form persona registered from raw text.',
+    author: actor,
+    systemPrompt: trimmed,
+    variables: []
+  };
+}
+
+/**
+ * Registers a persona from arbitrary text (no YAML/JSON structure required). The advisory injection
+ * scanner still runs: matching language is returned as warnings and never blocks registration — the
+ * operator is the owner and decides.
+ */
+export async function registerPersonaText(target: string, text: string, actor: string): Promise<{ persona: PersonaDefinition; warnings: string[] }> {
+  if (!actor.trim()) throw new Error('Persona registration requires a non-empty actor');
+  const trimmed = text.trim();
+  if (!trimmed) throw new Error('Persona text must not be empty');
+  const definition = freeformPersonaDefinition(trimmed, actor);
+  // The free-form id is derived from the text alone, so an existing persona with this id already
+  // holds the same prompt regardless of the actor; returning it keeps identical text idempotent.
+  const existing = (await readPersonaStore(target)).personas.find((persona) => persona.id === definition.id);
+  const persona = existing ?? await persistPersona(target, definition);
+  return { persona, warnings: injectionIssues(trimmed) };
 }
 
 export async function listPersonas(target: string): Promise<PersonaDefinition[]> {

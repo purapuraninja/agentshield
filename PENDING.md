@@ -325,6 +325,11 @@ Terakhir diperbarui: 2026-08-09.
   `definition`, remove, apply, model-request dengan validasi sebelum receipt dicatat, applications +
   verifikasi chain) dan dashboard view "Personas" untuk registrasi, apply + build model request
   per provider/model, serta audit trail aplikasi. Diuji API contract dan browser end-to-end.
+- [x] Registrasi persona **free-form** (`format: freeform` di API, `persona create-text <file>` di
+  CLI, toggle "Free text" di dashboard): teks apa pun yang ditempel langsung menjadi system prompt,
+  `id`/`name` diturunkan otomatis (id content-addressed dari hash teks sehingga teks identik
+  ter-dedupe), tanpa aturan struktur YAML. Scanner bahasa advisory tetap berjalan — bahasa
+  injection/jailbreak dilaporkan sebagai warning, tidak pernah memblokir.
 
 ## 7. Runtime SDK, policy gate, dan correlation — P1
 

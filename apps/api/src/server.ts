@@ -5,7 +5,7 @@ import cors from '@fastify/cors';
 import { createId, memoryAuditReportSchema, scanReportSchema } from '@agentshield/core';
 import { evaluatePolicy, scanInjectionText, scanTarget, staticRules, getRule, type PolicyFile } from '@agentshield/scanner';
 import { auditMemory, classifyMemoryTypes, getMemoryRule, listQuarantine, listRemediationPlans, memoryRules, planRemediation, approveRemediation, executeRemediation, rollbackRemediation, quarantineMemory, reconcileMemoryInventory, restoreMemory } from '@agentshield/memory';
-import { applyPersona, buildModelRequest, getPersona, listPersonaApplications, listPersonas, loadPersonaFile, modelRequestOptionsSchema, registerPersona, removePersona, verifyApplicationChain } from '@agentshield/persona';
+import { applyPersona, buildModelRequest, getPersona, listPersonaApplications, listPersonas, loadPersonaFile, modelRequestOptionsSchema, registerPersona, registerPersonaText, removePersona, validatePersona, verifyApplicationChain } from '@agentshield/persona';
 import { EventStore, createRuntimeEvent } from '@agentshield/runtime';
 import { renderMemoryEvidenceBundle, renderMemorySarif } from '@agentshield/reports';
 import {
@@ -223,14 +223,26 @@ export async function buildServer(options: ApiOptions = {}): Promise<FastifyInst
     return persona ? { data: persona } : reply.status(404).send(personaError(request, 404, 'not_found', 'Persona not found'));
   });
   app.post('/v1/personas', async (request, reply) => {
-    const body = request.body as { definition?: unknown; definitionText?: string; actor: string };
+    const body = request.body as { definition?: unknown; definitionText?: string; actor: string; format?: string };
     if (!body?.actor) return reply.status(400).send(personaError(request, 400, 'invalid_request', 'actor is required'));
     try {
+      // Free-form registration: any pasted text becomes the persona; id/name are derived and the
+      // advisory scanner reports warnings (never blocks). No YAML/JSON structure is required.
+      if (body.format === 'freeform') {
+        if (typeof body.definitionText !== 'string' || !body.definitionText.trim()) {
+          return reply.status(400).send(personaError(request, 400, 'invalid_request', 'definitionText is required for freeform registration'));
+        }
+        const registered = await registerPersonaText(personaTarget, body.definitionText, body.actor);
+        return reply.status(201).send({ data: registered.persona, warnings: registered.warnings });
+      }
       let definition: unknown;
       if (body.definition !== undefined) definition = body.definition;
       else if (typeof body.definitionText === 'string' && body.definitionText.trim()) definition = loadPersonaFile(body.definitionText);
       else return reply.status(400).send(personaError(request, 400, 'invalid_request', 'definition or definitionText is required'));
-      return reply.status(201).send({ data: await registerPersona(personaTarget, definition, body.actor) });
+      // Advisory warnings accompany every registration so the operator sees the same signal
+      // regardless of format; they never block registration.
+      const validation = validatePersona(definition);
+      return reply.status(201).send({ data: await registerPersona(personaTarget, definition, body.actor), warnings: validation.warnings });
     } catch (error) {
       return reply.status(400).send(personaError(request, 400, 'invalid_request', error instanceof Error ? error.message : String(error)));
     }

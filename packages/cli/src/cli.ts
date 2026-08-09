@@ -17,7 +17,7 @@ import { auditMemory, classifyMemoryTypes, getMemoryRule, listQuarantine, memory
   planRemediation, approveRemediation, executeRemediation, rollbackRemediation, rejectRemediation, expungeRemediation, listRemediationPlans, getRemediationPlan } from '@agentshield/memory';
 import {
   applyPersona, buildModelRequest, listPersonaApplications, listPersonas, getPersona, loadPersonaFile,
-  MODEL_PROVIDERS, modelRequestOptionsSchema, registerPersona, removePersona, renderPersona,
+  MODEL_PROVIDERS, modelRequestOptionsSchema, registerPersona, registerPersonaText, removePersona, renderPersona,
   validatePersona, verifyApplicationChain
 } from '@agentshield/persona';
 import { EventStore, buildEvidenceGraph, createRuntimeEvent } from '@agentshield/runtime';
@@ -351,6 +351,14 @@ persona.command('create <file>').description('Register a persona from a YAML or 
     const registered = await registerPersona(personaTarget(options.target), definition, options.actor);
     for (const warning of validation.warnings) console.error(`Warning: ${warning}`);
     await emit(`Registered ${registered.id} v${registered.version} (${registered.name})`);
+  });
+persona.command('create-text <file>').description('Register a persona from a raw text file (free-form; no YAML/JSON structure required)')
+  .requiredOption('--actor <name>').option('--target <path>', 'store location', '.')
+  .action(async (file, options) => {
+    const text = await readFile(resolve(file), 'utf8');
+    const result = await registerPersonaText(personaTarget(options.target), text, options.actor);
+    for (const warning of result.warnings) console.error(`Warning: ${warning}`);
+    await emit(`Registered ${result.persona.id} v${result.persona.version} (${result.persona.name})`);
   });
 persona.command('list').description('List registered personas').option('--target <path>', 'store location', '.').option('--json', 'JSON output')
   .action(async (options) => {
