@@ -45,7 +45,7 @@ services:
     ports:
       - "127.0.0.1:8082:80"
     volumes:
-      - ./Caddyfile.shield:/etc/caddy/Caddyfile:ro
+      - ../docker/Caddyfile.shield:/etc/caddy/Caddyfile:ro
     networks:
       - agentshield-internal
     depends_on:
