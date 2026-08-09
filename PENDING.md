@@ -283,6 +283,19 @@ Terakhir diperbarui: 2026-08-09.
 6. Tambahkan integration rollback drill untuk setiap write-capable adapter sebelum feature flag write
    dapat diaktifkan.
 
+## 6b. Persona application — P1
+
+- [x] Package baru `@agentshield/persona`: definisi persona versi (id, author, system-prompt template
+  dengan variabel deklaratif), store persisted content-addressed (`.agentshield/personas.json`),
+  render dengan override variabel, dan **injection guard** yang menolak persona yang menyelundupkan
+  instruction-override, safety-bypass, atau secret-exfiltration (EN + ID) baik di template maupun
+  nilai variabel — kanal persona yang tepercaya tidak bisa dipakai untuk melepas guardrail.
+- [x] `applyPersona` merender prompt, mencatat receipt immutable hash-chained
+  (`persona-applications.jsonl`, prompt mentah tidak pernah disimpan, hanya hash-nya), dan
+  `verifyApplicationChain` mendeteksi tampering pada rantai aplikasi.
+- [x] CLI: `agentshield persona create|list|show|render|apply|verify|applications|remove` dengan
+  fixture contoh aman `fixtures/safe/personas/code-reviewer.yaml`.
+
 ## 7. Runtime SDK, policy gate, dan correlation — P1
 
 - [x] Event schema/store, evidence graph lokal, dan TypeScript SDK lokal (`AgentShieldGate` di

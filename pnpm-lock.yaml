@@ -143,6 +143,9 @@ importers:
       '@agentshield/memory':
         specifier: workspace:*
         version: link:../memory
+      '@agentshield/persona':
+        specifier: workspace:*
+        version: link:../persona
       '@agentshield/reports':
         specifier: workspace:*
         version: link:../reports
@@ -185,6 +188,18 @@ importers:
       yaml:
         specifier: ^2.8.0
         version: 2.9.0
+
+  packages/persona:
+    dependencies:
+      '@agentshield/core':
+        specifier: workspace:*
+        version: link:../core
+      yaml:
+        specifier: ^2.8.0
+        version: 2.9.0
+      zod:
+        specifier: ^4.0.14
+        version: 4.4.3
 
   packages/reports:
     dependencies:

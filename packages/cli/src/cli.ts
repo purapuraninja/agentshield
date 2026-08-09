@@ -15,6 +15,10 @@ import {
 import { renderAgentBom, renderHtml, renderMemoryAgentBom, renderMemoryEvidenceBundle, renderMemoryHtml, renderMemorySarif, renderSarif } from '@agentshield/reports';
 import { auditMemory, classifyMemoryTypes, getMemoryRule, listQuarantine, memoryRules, quarantineMemory, reconcileMemoryInventory, restoreMemory, type AuditOptions,
   planRemediation, approveRemediation, executeRemediation, rollbackRemediation, rejectRemediation, expungeRemediation, listRemediationPlans, getRemediationPlan } from '@agentshield/memory';
+import {
+  applyPersona, listPersonaApplications, listPersonas, getPersona, loadPersonaFile, registerPersona,
+  removePersona, renderPersona, validatePersona, verifyApplicationChain
+} from '@agentshield/persona';
 import { EventStore, buildEvidenceGraph, createRuntimeEvent } from '@agentshield/runtime';
 import {
   buildRulepack, deserializeRules, generateRulepackKeyPair, installRulepack, loadRulepackBundle,
@@ -326,6 +330,90 @@ exceptions.command('list <policy>').description('List all exception records').op
     const records = await listPolicyExceptions(policyPath);
     await emit(options.json ? safeJson(records) : (records.length ? records.map((item) => `${item.status.toUpperCase().padEnd(9)} ${item.exceptionId}  ${item.target.kind}=${String(item.target.ruleId ?? item.target.resource)}  owner ${item.owner}  expires ${item.expiresAt}`).join('\n') : 'No exceptions.'));
   });
+
+const persona = program.command('persona').description('Define, validate, render, and apply agent personas with a verifiable audit trail');
+function personaTarget(value: string | undefined): string { return value ?? '.'; }
+function personaVariables(values: string[] | undefined): Record<string, string> {
+  const variables: Record<string, string> = {};
+  for (const assignment of values ?? []) {
+    const separator = assignment.indexOf('=');
+    if (separator <= 0) throw new Error(`Invalid variable assignment: ${assignment} (expected name=value)`);
+    variables[assignment.slice(0, separator)] = assignment.slice(separator + 1);
+  }
+  return variables;
+}
+persona.command('create <file>').description('Register a persona from a YAML or JSON definition')
+  .requiredOption('--actor <name>').option('--target <path>', 'store location', '.')
+  .action(async (file, options) => {
+    const definition = loadPersonaFile(await readFile(resolve(file), 'utf8'));
+    const registered = await registerPersona(personaTarget(options.target), definition, options.actor);
+    await emit(`Registered ${registered.id} v${registered.version} (${registered.name})`);
+  });
+persona.command('list').description('List registered personas').option('--target <path>', 'store location', '.').option('--json', 'JSON output')
+  .action(async (options) => {
+    const personas = await listPersonas(personaTarget(options.target));
+    await emit(options.json ? safeJson(personas) : personas.length
+      ? personas.map((item) => `${item.id}  v${item.version}  ${item.name}  by ${item.author}`).join('\n')
+      : 'No personas registered.');
+  });
+persona.command('show <id>').description('Show a registered persona').option('--target <path>', 'store location', '.').option('--json', 'JSON output')
+  .action(async (id, options) => {
+    const found = await getPersona(personaTarget(options.target), id);
+    if (!found) throw new Error(`Persona not found: ${id}`);
+    await emit(options.json ? safeJson(found) : `${found.id} v${found.version} — ${found.name}\n${found.description}\n\n${found.systemPrompt}`);
+  });
+persona.command('render <id>').description('Render the persona system prompt with variable overrides')
+  .option('--target <path>', 'store location', '.').option('--set <name=value>', 'set a persona variable (repeatable)', collectVariables, [])
+  .option('-o, --output <path>', 'write the rendered prompt to a file')
+  .action(async (id, options) => {
+    const found = await getPersona(personaTarget(options.target), id);
+    if (!found) throw new Error(`Persona not found: ${id}`);
+    const rendered = renderPersona(found, personaVariables(options.set));
+    await emit(rendered.prompt, options.output);
+  });
+persona.command('apply <id>').description('Apply a persona: render, inject, and record an immutable application receipt')
+  .requiredOption('--actor <name>').option('--reason <text>').option('--target <path>', 'store location', '.')
+  .option('--set <name=value>', 'set a persona variable (repeatable)', collectVariables, [])
+  .option('-o, --output <path>', 'also write the applied prompt to a file')
+  .option('--json', 'JSON output')
+  .action(async (id, options) => {
+    const applied = await applyPersona(personaTarget(options.target), id, {
+      actor: options.actor, reason: options.reason, variables: personaVariables(options.set)
+    });
+    if (options.output) await emit(applied.prompt, options.output);
+    await emit(options.json ? safeJson(applied) : [
+      `Applied ${applied.personaId} v${applied.version} by ${applied.actor}`, `Prompt hash: ${applied.promptHash}`,
+      `Receipt: ${applied.receipt}`
+    ].join('\n'));
+  });
+persona.command('verify <file>').description('Validate a persona definition file without registering it').option('--json', 'JSON output')
+  .action(async (file, options) => {
+    const result = validatePersona(loadPersonaFile(await readFile(resolve(file), 'utf8')));
+    await emit(options.json ? safeJson(result) : result.valid ? 'Valid persona.' : `Invalid persona:\n${result.issues.map((issue) => `- ${issue}`).join('\n')}`);
+    if (!result.valid) process.exitCode = 4;
+  });
+persona.command('applications').description('List applied-persona receipts and verify the hash chain')
+  .option('--target <path>', 'store location', '.').option('--json', 'JSON output')
+  .action(async (options) => {
+    const target = personaTarget(options.target);
+    const applications = await listPersonaApplications(target);
+    const chain = verifyApplicationChain(applications);
+    await emit(options.json ? safeJson({ chain, applications }) : [
+      `Applications: ${applications.length}`, `Chain: ${chain.valid ? 'intact' : `BROKEN at ${chain.brokenAt}`}`,
+      ...applications.map((item) => `${item.appliedAt}  ${item.personaId} v${item.version}  by ${item.actor}  ${item.receipt}`)
+    ].join('\n'));
+    if (!chain.valid) process.exitCode = 4;
+  });
+persona.command('remove <id>').description('Remove a registered persona').requiredOption('--actor <name>').option('--target <path>', 'store location', '.')
+  .action(async (id, options) => {
+    const removed = await removePersona(personaTarget(options.target), id, options.actor);
+    if (!removed) throw new Error(`Persona not found: ${id}`);
+    await emit(`Removed ${removed.id} v${removed.version}`);
+  });
+
+function collectVariables(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
 
 program.command('report <input>').description('Convert a canonical JSON report').requiredOption('-f, --format <format>', 'html, sarif, or agentbom').option('-o, --output <path>')
   .action(async (input, options) => {
