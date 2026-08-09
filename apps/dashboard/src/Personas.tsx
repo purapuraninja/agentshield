@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from './App.js';
 import { apiErrorMessage, apiFetch } from './api.js';
 
@@ -16,6 +16,10 @@ interface ModelRequestData {
   provider: string; model: string; systemPrompt: string; promptHash: string;
   request: Record<string, unknown>; injectedAs: string;
 }
+interface ChatTurn { role: 'user' | 'assistant'; content: string }
+
+const CHAT_STORAGE_PREFIX = 'agentshield:chat:';
+const MAX_CHAT_TURNS = 20;
 
 const PROVIDERS = ['openai', 'anthropic', 'gemini', 'mistral', 'ollama', 'responses', 'generic'] as const;
 type Provider = (typeof PROVIDERS)[number];
@@ -50,9 +54,12 @@ export function Personas() {
   const [chatMessage, setChatMessage] = useState('Halo, kamu persona apa?');
   const [chatApiKey, setChatApiKey] = useState('');
   const [chatBaseUrl, setChatBaseUrl] = useState('');
-  const [chatReply, setChatReply] = useState<{ message: string; receipt: string; warnings: string[]; usage?: { promptTokens?: number; completionTokens?: number } } | null>(null);
+  const [chatReply, setChatReply] = useState<{ receipt: string; warnings: string[]; usage?: { promptTokens?: number; completionTokens?: number } } | null>(null);
   const [chatBusy, setChatBusy] = useState(false);
   const [chatError, setChatError] = useState('');
+  const [conversation, setConversation] = useState<ChatTurn[]>([]);
+  const [conversationLoaded, setConversationLoaded] = useState(false);
+  const conversationRef = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
@@ -93,6 +100,30 @@ export function Personas() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedIdKey]);
 
+  // Load the persisted conversation for the selected persona (browser-only; the API key is never
+  // stored and the messages stay on the operator's machine). The loaded flag prevents the save
+  // effect from overwriting the new persona's history with the previous one's on switch.
+  useEffect(() => {
+    setConversationLoaded(false);
+    setChatReply(null);
+    try {
+      const saved = localStorage.getItem(`${CHAT_STORAGE_PREFIX}${selectedIdKey}`);
+      setConversation(saved ? (JSON.parse(saved) as ChatTurn[]) : []);
+    } catch { setConversation([]); }
+    setConversationLoaded(true);
+  }, [selectedIdKey]);
+
+  useEffect(() => {
+    if (!conversationLoaded || !selectedIdKey) return;
+    try { localStorage.setItem(`${CHAT_STORAGE_PREFIX}${selectedIdKey}`, JSON.stringify(conversation.slice(-MAX_CHAT_TURNS))); }
+    catch { /* storage full or unavailable: keep the in-memory conversation */ }
+  }, [conversation, conversationLoaded, selectedIdKey]);
+
+  useEffect(() => {
+    const container = conversationRef.current;
+    if (container) container.scrollTop = container.scrollHeight;
+  }, [conversation]);
+
   async function register() {
     if (!definitionText.trim()) return;
     setBusy(true); setError(''); setMessage('');
@@ -116,26 +147,40 @@ export function Personas() {
   }
 
   async function sendChat() {
-    if (!selected || !chatMessage.trim() || !model.trim()) return;
+    if (chatBusy || !selected || !chatMessage.trim() || !model.trim()) return;
     setChatBusy(true); setChatError(''); setChatReply(null);
     try {
       const variables = Object.fromEntries(Object.entries(variableValues).filter(([, value]) => value.trim() !== ''));
       const body: Record<string, unknown> = {
-        actor: applyActor.trim() || 'dashboard', provider, model, message: chatMessage, variables
+        actor: applyActor.trim() || 'dashboard', provider, model, message: chatMessage.trim(), variables
       };
+      if (conversation.length > 0) body.history = conversation.slice(-MAX_CHAT_TURNS);
       if (chatApiKey.trim()) body.apiKey = chatApiKey.trim();
       if (chatBaseUrl.trim()) body.baseUrl = chatBaseUrl.trim();
       if (maxTokens.trim()) body.maxTokens = Number(maxTokens);
       if (temperature.trim()) body.temperature = Number(temperature);
+      // The user turn appears immediately (unsliced so a failure can roll it back without losing
+      // the oldest turn); the assistant reply is appended on success, then capped for storage.
+      const userTurn: ChatTurn = { role: 'user', content: chatMessage.trim() };
+      setConversation((current) => [...current, userTurn]);
       const response = await apiFetch(`/v1/personas/${selected.id}/chat`, {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
       });
       if (!response.ok) throw new Error(await apiErrorMessage(response, 'Chat failed'));
-      const data = await response.json();
-      setChatReply({ message: data.data.message, receipt: data.data.receipt, warnings: data.data.warnings ?? [], usage: data.data.usage });
+      const data = (await response.json()) as {
+        data: { message: string; receipt: string; warnings?: string[]; usage?: { promptTokens?: number; completionTokens?: number } }
+      };
+      setChatReply({ receipt: data.data.receipt, warnings: data.data.warnings ?? [], usage: data.data.usage });
+      const assistantTurn: ChatTurn = { role: 'assistant', content: data.data.message };
+      setConversation((current) => [...current, assistantTurn].slice(-MAX_CHAT_TURNS));
       setMessage(`Chat applied ${selected.id} v${selected.version}; receipt ${data.data.receipt.slice(0, 18)}…`);
+      setChatMessage('');
       await refresh();
-    } catch (chatRequestError) { setChatError(chatRequestError instanceof Error ? chatRequestError.message : String(chatRequestError)); }
+    } catch (chatRequestError) {
+      // Roll the optimistic user turn back out of the conversation when the call fails.
+      setConversation((current) => current.slice(0, -1));
+      setChatError(chatRequestError instanceof Error ? chatRequestError.message : String(chatRequestError));
+    }
     finally { setChatBusy(false); }
   }
 
@@ -241,8 +286,26 @@ export function Personas() {
 
     <article className="panel persona-panel">
       <div className="section-head"><div><p className="overline">Live test</p><h2>Try chat</h2></div>
-        <span className="badge info">key per request · never stored</span></div>
-      <p className="secondary" style={{ maxWidth: 'none' }}>Send a message to the model with your own API key to verify the persona behaves as written. Applying records a receipt in the audit trail, the provider request is built, and the model reply is shown here.</p>
+        <span className="panel-actions">
+          {conversation.length > 0 && <button className="link" onClick={() => { setConversation([]); setChatReply(null); setChatMessage(''); }}><Icon name="scan" size={14} />New conversation</button>}
+          <span className="badge info">key per request · never stored</span>
+        </span></div>
+      <p className="secondary" style={{ maxWidth: 'none' }}>Send a message to the model with your own API key to verify the persona behaves as written. Each turn records a receipt in the audit trail; the conversation stays per persona in your browser.</p>
+      {conversation.length === 0
+        ? <p className="secondary" style={{ marginTop: 13, maxWidth: 'none' }}>No messages yet — the conversation continues across turns until you start a new one.</p>
+        : <div className="chat-conversation" ref={conversationRef}>
+          {conversation.map((turn, index) => (
+            <div key={index} className={`chat-turn ${turn.role}`}>
+              <span className="chat-turn-role">{turn.role === 'user' ? 'You' : 'Model'}</span>
+              <p>{turn.content}</p>
+            </div>
+          ))}
+        </div>}
+      {chatReply && chatReply.warnings.length > 0 && <div className="error" role="status" style={{ marginTop: 11 }}><Icon name="alert" /><span>Advisory: {chatReply.warnings.join('; ')}</span></div>}
+      {chatReply && <div className="chat-receipt">
+        <span className="secondary" style={{ maxWidth: 'none' }}>last reply · receipt <code>{chatReply.receipt.slice(0, 24)}…</code></span>
+        {chatReply.usage && <span className="secondary" style={{ maxWidth: 'none' }}>{chatReply.usage.promptTokens ?? '?'} in · {chatReply.usage.completionTokens ?? '?'} out</span>}
+      </div>}
       <div className="persona-row three">
         <div className="field"><label htmlFor="chat-provider">Provider</label>
           <select id="chat-provider" className="field-input" value={provider} onChange={(event) => setProvider(event.target.value as Provider)}>
@@ -262,7 +325,8 @@ export function Personas() {
       <div className="field">
         <label htmlFor="chat-message">Message</label>
         <textarea id="chat-message" className="field-textarea" rows={3} style={{ minHeight: 88 }} value={chatMessage}
-          onChange={(event) => setChatMessage(event.target.value)} placeholder="Halo, kamu persona apa?" />
+          onChange={(event) => setChatMessage(event.target.value)} placeholder="Halo, kamu persona apa?"
+          onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendChat(); } }} />
       </div>
       <div className="persona-row">
         <span className="secondary" style={{ maxWidth: 'none' }}>Ollama needs no key; generic needs a base URL. The receipt lands in the audit trail below.</span>
@@ -272,15 +336,6 @@ export function Personas() {
       </div>
       {!personas.length && <p className="secondary" style={{ marginTop: 11, maxWidth: 'none' }}>No personas registered yet — register one above to try it here.</p>}
       {chatError && <div className="error" role="alert"><Icon name="alert" /><span>{chatError}</span></div>}
-      {chatReply && <div className="chat-reply">
-        <div className="chat-reply-head">
-          <span className="badge info">reply</span>
-          <span className="secondary" style={{ maxWidth: 'none' }}>receipt <code>{chatReply.receipt.slice(0, 24)}…</code></span>
-          {chatReply.usage && <span className="secondary" style={{ maxWidth: 'none' }}>{chatReply.usage.promptTokens ?? '?'} in · {chatReply.usage.completionTokens ?? '?'} out</span>}
-        </div>
-        {chatReply.warnings.length > 0 && <div className="error" role="status" style={{ marginBottom: 10 }}><Icon name="alert" /><span>Advisory: {chatReply.warnings.join('; ')}</span></div>}
-        <p>{chatReply.message}</p>
-      </div>}
     </article>
 
     {result && <article className="panel persona-panel">

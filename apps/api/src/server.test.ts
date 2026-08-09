@@ -248,7 +248,13 @@ describe('local API', () => {
     expect(created.statusCode).toBe(201);
     const personaId = created.json().data.id;
 
-    const chat = await app.inject({ method: 'POST', url: `/v1/personas/${personaId}/chat`, payload: { actor: 'deploy-bot', provider: 'openai', model: 'gpt-4o', apiKey: 'sk-dashboard-test', message: 'Halo!' } });
+    const chat = await app.inject({ method: 'POST', url: `/v1/personas/${personaId}/chat`, payload: {
+      actor: 'deploy-bot', provider: 'openai', model: 'gpt-4o', apiKey: 'sk-dashboard-test', message: 'Halo!',
+      history: [
+        { role: 'user', content: 'Siapa kamu?' },
+        { role: 'assistant', content: 'Aku asisten ramah.' }
+      ]
+    } });
     expect(chat.statusCode).toBe(200);
     expect(chat.json().data.message).toContain('Halo! Saya asisten');
     expect(chat.json().data.receipt).toMatch(/^persona1:/);
@@ -259,7 +265,9 @@ describe('local API', () => {
     expect(call.headers.authorization).toBe('Bearer sk-dashboard-test');
     const messages = call.body.messages as Array<{ role: string; content: string }>;
     expect(messages[0]).toMatchObject({ role: 'system', content: 'Kamu adalah asisten yang ramah.' });
-    expect(messages[1]).toEqual({ role: 'user', content: 'Halo!' });
+    expect(messages[1]).toEqual({ role: 'user', content: 'Siapa kamu?' });
+    expect(messages[2]).toEqual({ role: 'assistant', content: 'Aku asisten ramah.' });
+    expect(messages[3]).toEqual({ role: 'user', content: 'Halo!' });
 
     // The apply that preceded the chat is part of the audited chain.
     const audit = await app.inject({ method: 'GET', url: '/v1/personas/applications' });
@@ -270,6 +278,18 @@ describe('local API', () => {
     const noMessage = await app.inject({ method: 'POST', url: `/v1/personas/${personaId}/chat`, payload: { actor: 'deploy-bot', provider: 'openai', model: 'gpt-4o', apiKey: 'sk-test' } });
     expect(noMessage.statusCode).toBe(400);
     expect(noMessage.json().error.code).toBe('invalid_request');
+    expect(calls).toHaveLength(1);
+
+    // Malformed history (a role the chat API does not accept) is rejected before any call.
+    const badHistory = await app.inject({ method: 'POST', url: `/v1/personas/${personaId}/chat`, payload: { actor: 'deploy-bot', provider: 'openai', model: 'gpt-4o', apiKey: 'sk-test', message: 'X', history: [{ role: 'system', content: 'nope' }] } });
+    expect(badHistory.statusCode).toBe(400);
+    expect(badHistory.json().error.code).toBe('invalid_request');
+    expect(calls).toHaveLength(1);
+
+    // Over-long history is rejected before any provider call.
+    const longHistory = await app.inject({ method: 'POST', url: `/v1/personas/${personaId}/chat`, payload: { actor: 'deploy-bot', provider: 'openai', model: 'gpt-4o', apiKey: 'sk-test', message: 'X', history: Array.from({ length: 101 }, (_, index) => ({ role: 'user', content: `turn ${index}` })) } });
+    expect(longHistory.statusCode).toBe(400);
+    expect(longHistory.json().error.code).toBe('invalid_request');
     expect(calls).toHaveLength(1);
 
     // Generic provider routes through the operator-supplied base URL.

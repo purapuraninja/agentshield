@@ -5,7 +5,7 @@ import cors from '@fastify/cors';
 import { createId, memoryAuditReportSchema, scanReportSchema } from '@agentshield/core';
 import { evaluatePolicy, scanInjectionText, scanTarget, staticRules, getRule, type PolicyFile } from '@agentshield/scanner';
 import { auditMemory, classifyMemoryTypes, getMemoryRule, listQuarantine, listRemediationPlans, memoryRules, planRemediation, approveRemediation, executeRemediation, rollbackRemediation, quarantineMemory, reconcileMemoryInventory, restoreMemory } from '@agentshield/memory';
-import { applyPersona, buildModelRequest, chatWithModel, getPersona, listPersonaApplications, listPersonas, loadPersonaFile, modelRequestOptionsSchema, registerPersona, registerPersonaText, removePersona, validatePersona, verifyApplicationChain } from '@agentshield/persona';
+import { applyPersona, buildModelRequest, chatWithModel, getPersona, listPersonaApplications, listPersonas, loadPersonaFile, modelRequestOptionsSchema, registerPersona, registerPersonaText, removePersona, validatePersona, verifyApplicationChain, type ChatTurn } from '@agentshield/persona';
 import { EventStore, createRuntimeEvent } from '@agentshield/runtime';
 import { renderMemoryEvidenceBundle, renderMemorySarif } from '@agentshield/reports';
 import {
@@ -270,10 +270,27 @@ export async function buildServer(options: ApiOptions = {}): Promise<FastifyInst
     const { id } = request.params as { id: string };
     const body = request.body as {
       actor: string; message: string; provider?: string; model?: string; apiKey?: string; baseUrl?: string;
-      variables?: Record<string, string>; reason?: string; temperature?: number; maxTokens?: number; topP?: number
+      variables?: Record<string, string>; reason?: string; temperature?: number; maxTokens?: number; topP?: number;
+      history?: Array<unknown>
     };
     if (!body?.actor) return reply.status(400).send(personaError(request, 400, 'invalid_request', 'actor is required'));
     if (typeof body.message !== 'string' || !body.message.trim()) return reply.status(400).send(personaError(request, 400, 'invalid_request', 'message is required'));
+    if (body.history !== undefined && !Array.isArray(body.history)) {
+      return reply.status(400).send(personaError(request, 400, 'invalid_request', 'history must be an array of { role, content } turns'));
+    }
+    // Conversation history is passed through to the provider as-is (roles user/assistant only);
+    // it is never persisted by AgentShield — the dashboard keeps it in the browser.
+    const history: ChatTurn[] = [];
+    for (const turn of body.history ?? []) {
+      const item = turn as { role?: unknown; content?: unknown };
+      if (!item || (item.role !== 'user' && item.role !== 'assistant') || typeof item.content !== 'string' || !item.content.trim()) {
+        return reply.status(400).send(personaError(request, 400, 'invalid_request', 'history turns must have role user|assistant and a non-empty content string'));
+      }
+      history.push({ role: item.role, content: item.content });
+    }
+    if (history.length > 100) {
+      return reply.status(400).send(personaError(request, 400, 'invalid_request', 'history must not exceed 100 turns'));
+    }
     let requestOptions;
     try {
       requestOptions = modelRequestOptionsSchema.parse({
@@ -289,7 +306,7 @@ export async function buildServer(options: ApiOptions = {}): Promise<FastifyInst
       const applied = await applyPersona(personaTarget, id, { actor: body.actor, reason: body.reason, variables: body.variables });
       const built = buildModelRequest(applied.prompt, requestOptions);
       const chat = await chatWithModel(built, body.message, {
-        apiKey: body.apiKey, baseUrl: body.baseUrl,
+        apiKey: body.apiKey, baseUrl: body.baseUrl, history,
         ...(options.chatFetch ? { fetchImpl: options.chatFetch } : {})
       });
       return { data: {

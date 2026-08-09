@@ -393,5 +393,5 @@ export {
 } from './models.js';
 export {
   chatWithModel, PROVIDER_ENV_KEYS,
-  type ChatCallOptions, type ChatResult
+  type ChatCallOptions, type ChatResult, type ChatTurn
 } from './chat.js';

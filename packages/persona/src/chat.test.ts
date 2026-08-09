@@ -109,4 +109,47 @@ describe('chatWithModel', () => {
     expect(PROVIDER_ENV_KEYS.mistral).toBe('MISTRAL_API_KEY');
     expect(PROVIDER_ENV_KEYS.ollama).toBe('');
   });
+
+  it('continues a multi-turn conversation for chat-completions providers', async () => {
+    const fetchImpl = mockFetch({ body: { choices: [{ message: { content: 'Tentu, lanjutkan.' } }] } });
+    const built = buildModelRequest('Kamu ramah.', { provider: 'openai', model: 'gpt-4o' });
+    const result = await chatWithModel(built, 'Lanjutkan', {
+      apiKey: 'sk-test', fetchImpl,
+      history: [
+        { role: 'user', content: 'Halo' },
+        { role: 'assistant', content: 'Halo juga!' }
+      ]
+    });
+    expect(result.message).toBe('Tentu, lanjutkan.');
+    const body = JSON.parse(String(captured(fetchImpl).init.body)) as { messages: Array<{ role: string; content: string }> };
+    expect(body.messages).toEqual([
+      { role: 'system', content: 'Kamu ramah.' },
+      { role: 'user', content: 'Halo' },
+      { role: 'assistant', content: 'Halo juga!' },
+      { role: 'user', content: 'Lanjutkan' }
+    ]);
+  });
+
+  it('keeps Anthropic messages alternating user and assistant with history', async () => {
+    const fetchImpl = mockFetch({ body: { content: [{ type: 'text', text: 'Baik.' }] } });
+    const built = buildModelRequest('P.', { provider: 'anthropic', model: 'claude-sonnet-4-20250514' });
+    await chatWithModel(built, 'Pertanyaan', { apiKey: 'sk-ant-test', fetchImpl, history: [{ role: 'user', content: 'Satu' }, { role: 'assistant', content: 'Dua' }] });
+    const body = JSON.parse(String(captured(fetchImpl).init.body)) as { messages: Array<{ role: string; content: string }> };
+    expect(body.messages).toEqual([
+      { role: 'user', content: 'Satu' },
+      { role: 'assistant', content: 'Dua' },
+      { role: 'user', content: 'Pertanyaan' }
+    ]);
+  });
+
+  it('maps assistant history turns to the model role for Gemini', async () => {
+    const fetchImpl = mockFetch({ body: { candidates: [{ content: { parts: [{ text: 'Siap.' }] } }] } });
+    const built = buildModelRequest('P.', { provider: 'gemini', model: 'gemini-2.0-flash' });
+    await chatWithModel(built, 'Tes', { apiKey: 'gem-test', fetchImpl, history: [{ role: 'assistant', content: 'Siap.' }] });
+    const body = JSON.parse(String(captured(fetchImpl).init.body)) as { contents: Array<{ role: string; parts: Array<{ text: string }> }> };
+    expect(body.contents).toEqual([
+      { role: 'model', parts: [{ text: 'Siap.' }] },
+      { role: 'user', parts: [{ text: 'Tes' }] }
+    ]);
+  });
 });

@@ -14,6 +14,12 @@ import type { ModelProvider, ModelRequestResult } from './models.js';
  * to the caller only.
  */
 
+/** One prior conversation turn: the operator's message or the model's reply. */
+export interface ChatTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 export interface ChatCallOptions {
   /** Provider API key. Prefer the provider env var; never stored by AgentShield. */
   apiKey?: string;
@@ -23,6 +29,8 @@ export interface ChatCallOptions {
   timeoutMs?: number;
   /** Injectable fetch for tests. */
   fetchImpl?: typeof fetch;
+  /** Earlier conversation turns (newest last) to continue instead of starting fresh. */
+  history?: ChatTurn[];
 }
 
 export interface ChatResult {
@@ -73,28 +81,29 @@ function providerCall(built: ModelRequestResult, userMessage: string, options: C
   const json = { 'content-type': 'application/json' };
   const { provider } = built;
   const request = built.request as Record<string, unknown>;
+  const history = (options.history ?? []).filter((turn) => turn.content.trim());
 
   switch (provider) {
     case 'openai':
     case 'mistral': {
-      const messages = [...(request.messages as Array<Record<string, unknown>>), { role: 'user', content: userMessage }];
+      const messages = [...(request.messages as Array<Record<string, unknown>>), ...history, { role: 'user', content: userMessage }];
       return { url: ENDPOINTS[provider], headers: { ...json, authorization: `Bearer ${apiKey}` }, payload: { ...request, messages } };
     }
     case 'ollama': {
-      const messages = [...(request.messages as Array<Record<string, unknown>>), { role: 'user', content: userMessage }];
+      const messages = [...(request.messages as Array<Record<string, unknown>>), ...history, { role: 'user', content: userMessage }];
       return { url: ENDPOINTS.ollama, headers: json, payload: { ...request, messages } };
     }
     case 'anthropic':
       return {
         url: ENDPOINTS.anthropic,
         headers: { ...json, 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-        payload: { ...request, messages: [{ role: 'user', content: userMessage }] }
+        payload: { ...request, messages: [...history, { role: 'user', content: userMessage }] }
       };
     case 'responses':
       return {
         url: ENDPOINTS.responses,
         headers: { ...json, authorization: `Bearer ${apiKey}` },
-        payload: { ...request, input: [{ role: 'user', content: userMessage }] }
+        payload: { ...request, input: [...history, { role: 'user', content: userMessage }] }
       };
     case 'gemini': {
       const model = String(request.model);
@@ -102,7 +111,14 @@ function providerCall(built: ModelRequestResult, userMessage: string, options: C
       return {
         url,
         headers: json,
-        payload: { ...request, contents: [{ role: 'user', parts: [{ text: userMessage }] }] }
+        payload: {
+          ...request,
+          contents: [
+            // Gemini names the assistant role "model" rather than "assistant".
+            ...history.map((turn) => ({ role: turn.role === 'assistant' ? 'model' : 'user', parts: [{ text: turn.content }] })),
+            { role: 'user', parts: [{ text: userMessage }] }
+          ]
+        }
       };
     }
     case 'generic': {
@@ -113,6 +129,7 @@ function providerCall(built: ModelRequestResult, userMessage: string, options: C
         model: request.model,
         messages: [
           { role: 'system', content: built.systemPrompt },
+          ...history,
           { role: 'user', content: userMessage }
         ],
         ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
