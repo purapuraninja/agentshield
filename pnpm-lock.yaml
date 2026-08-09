@@ -96,6 +96,9 @@ importers:
       '@agentshield/memory':
         specifier: workspace:*
         version: link:../../packages/memory
+      '@agentshield/persona':
+        specifier: workspace:*
+        version: link:../../packages/persona
       '@agentshield/reports':
         specifier: workspace:*
         version: link:../../packages/reports
@@ -225,6 +228,9 @@ importers:
       '@agentshield/core':
         specifier: workspace:*
         version: link:../core
+      '@agentshield/persona':
+        specifier: workspace:*
+        version: link:../persona
 
   packages/scanner:
     dependencies:

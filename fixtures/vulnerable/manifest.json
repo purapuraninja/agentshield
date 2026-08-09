@@ -17,6 +17,9 @@
     { "id": "wildcard-mcp", "path": "mcp/mcp.json", "expect": ["AS-SC-025"] },
     { "id": "misleading-mcp", "path": "misleading-mcp/mcp.json", "expect": ["AS-SC-024"] },
     { "id": "mcp-implementation", "path": "mcp-implementation", "expect": ["AS-SC-027"] },
-    { "id": "wildcard-permissions", "path": "wildcard-permissions/permissions.json", "expect": ["AS-SC-025"] }
+    { "id": "wildcard-permissions", "path": "wildcard-permissions/permissions.json", "expect": ["AS-SC-025"] },
+    { "id": "athena-jailbreak", "path": "athena-jailbreak/SKILL.md", "expect": ["AS-SC-028"] },
+    { "id": "athena-memory-wipe", "path": "athena-jailbreak/MEMORY.md", "expect": ["AS-SC-028"] },
+    { "id": "jailbreak-prompt", "path": "jailbreak-prompt/SKILL.md", "expect": ["AS-SC-029"] }
   ]
 }

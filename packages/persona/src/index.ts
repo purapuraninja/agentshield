@@ -83,8 +83,17 @@ const INJECTION_PATTERNS: Array<RegExp> = [
   /(?:do not tell|hide this|secret(?:ly)?|do not reveal)\b/i,
   /(?:ignore|disregard)\s+the\s+(?:operator|owner|administrator)/i,
   /(?:abaikan|hiraukan)\s+(?:semua\s+)?(?:instruksi|perintah)\s+(?:sebelumnya|terdahulu)/i,
-  /(?:nonaktifkan|lewati|langgar)\s+(?:persetujuan|kebijakan|pengamanan?|aturan)/i,
-  /(?:bocorkan|kirim|tampilkan)\s+(?:system prompt|rahasia|kredensial|token|password)/i
+  /(?:bocorkan|kirim|tampilkan)\s+(?:system prompt|rahasia|kredensial|token|password)/i,
+  // Jailbreak activation frameworks (Athena/ColdBrew-style): bracket-form control tokens, unlock
+  // profiles, and unlock phrasing. Advisory only — the operator owns the persona and decides.
+  /\[\[AX:(?:MAX|STATUS|PROFILE|CHAIN|RESET)/,
+  /\bmax-breaker\b/,
+  /(?:six domains unlocked|full kill-chain|anti-cheat bypass|memory manipulation|jailbreak prompt)/i,
+  // Classic jailbreak personas and modes (DAN, Developer Mode, STAN, AIM, DUDE).
+  /Do Anything Now/i,
+  /\bDAN\s+mode/i,
+  /(?:developer|dev) mode[^\n]{0,80}(?:do anything now|uncensored|no restrictions)/i,
+  /(?:Smarter Than a Normal AI|Always Intelligent and Machiavellian|DUDE mode)/i
 ];
 
 const PLACEHOLDER = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
@@ -324,3 +333,7 @@ export function loadPersonaFile(content: string): unknown {
 }
 
 export { sha256 };
+export {
+  buildModelRequest, MODEL_PROVIDERS, modelRequestOptionsSchema,
+  type ModelProvider, type ModelRequestOptions, type ModelRequestResult
+} from './models.js';

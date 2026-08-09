@@ -49,6 +49,34 @@ describe('AgentShield runtime SDK', () => {
     expect(resolved.causalityIds).toContain(request.eventId);
   });
 
+  it('records a persona application with hash-only evidence and never the raw prompt', () => {
+    const events: RuntimeEvent[] = [];
+    const gate = new AgentShieldGate({ policies, signingKey: 'k', onEvent: (event) => events.push(event) });
+    const result = gate.recordPersona({
+      personaId: 'code-reviewer', version: 2, promptHash: 'sha256:abc123',
+      receipt: 'persona1:def456', reason: 'release 1.4'
+    }, { traceId: 't7', actor: 'agent' });
+    expect(result.event.type).toBe('persona.applied');
+    expect(result.event.target).toBe('code-reviewer');
+    expect(result.event.metadata.digest).toBe('sha256:abc123');
+    expect(result.event.metadata.receipt).toBe('persona1:def456');
+    expect(result.receipt).toMatch(/^as1:/);
+    expect(result.approved).toBe(true);
+    // The raw prompt text never appears anywhere in the event stream.
+    expect(JSON.stringify(events)).not.toContain('system prompt');
+    expect(JSON.stringify(events)).not.toContain('abc123'.repeat(2));
+  });
+
+  it('builds an evidence graph edge for a persona application', () => {
+    const events: RuntimeEvent[] = [];
+    const gate = new AgentShieldGate({ policies, onEvent: (event) => events.push(event) });
+    const start = gate.recordPersona({ personaId: 'reviewer', version: 1, promptHash: 'sha256:aa' }, { traceId: 't8', actor: 'agent' });
+    const run = gate.beforeTool({ tool: 'search' }, { traceId: 't8', actor: 'agent', parentId: start.event.eventId });
+    const graph = gate.incidentEvidence([start.event, run.event], 't8');
+    expect(graph.nodes.some((node) => node.kind === 'persona.applied')).toBe(true);
+    expect(graph.edges.some((edge) => edge.relation === 'requested' && edge.from === start.event.eventId)).toBe(true);
+  });
+
   it('exports a sanitized incident evidence graph with a receipt', () => {
     const gate = new AgentShieldGate({ policies, signingKey: 'k' });
     const start = gate.beforeTool({ tool: 'search' }, { traceId: 't6', actor: 'agent' });

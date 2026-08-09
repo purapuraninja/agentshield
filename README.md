@@ -7,7 +7,8 @@ finding includes deterministic evidence and remediation.
 This repository implements the local Community product described in
 [`AGENTSHIELD_DEVELOPMENT_PLAN.md`](./AGENTSHIELD_DEVELOPMENT_PLAN.md): static scanning, permission
 mapping, policy-as-code, JSON/SARIF/HTML/AgentBOM reports, read-only memory auditing, reversible
-quarantine, sanitized runtime events, a REST API, and a local dashboard.
+quarantine, sanitized runtime events, agent personas with provider-native model requests,
+jailbreak/prompt-injection detection, a REST API, and a local dashboard.
 
 ## Quick start
 
@@ -67,9 +68,20 @@ agentshield scan <target> --rulepack <bundle.json> --rulepack-key <public.pem>
 agentshield memory audit <json|jsonl|markdown|sqlite>
 agentshield memory quarantine <target> <memory-id> --actor <name> --reason <reason>
 agentshield memory restore <target> <memory-id> --actor <name> --reason <reason>
+agentshield memory reconcile <target>
+
+agentshield remediation plan <target> <memory-id> <quarantine|restore|deprecate> --actor <name> --reason <reason>
+agentshield remediation approve|execute|rollback <target> <plan-id> --actor <name>
+
+agentshield persona create <file.yaml> --actor <name>
+agentshield persona list|show <id>|render <id>|verify <file>|applications|remove <id>
+agentshield persona apply <id> --actor <name> [--set name=value]
+agentshield persona model <id> --provider <provider> --model <name> --actor <name>
 
 agentshield runtime ingest <events.jsonl>
 agentshield runtime trace <trace-id> --json
+
+agentshield telemetry status|enable|disable|preview
 ```
 
 SQLite is opened read-only and requires a table name:
@@ -92,6 +104,46 @@ reported only when validity windows overlap; staleness follows a per-record poli
 `ttl:<n>` labels, per-type defaults, volatility escalation for web/email/document sources, and
 supersession by newer facts); and PII matches `en-US`/`id-ID` locale packs plus configurable
 organization terms.
+
+## Agent personas
+
+Personas are trusted, versioned system-prompt templates with declared variables. Registering
+validates structure; applying renders the prompt and records an immutable, hash-chained receipt in
+`.agentshield/persona-applications.jsonl` (the raw prompt is never stored — only its hash). The
+injection scanner is advisory: operator-owned personas are never rejected for their content, only
+for structural problems (schema violations, undeclared variables, missing required variables).
+
+```bash
+agentshield persona create fixtures/safe/personas/code-reviewer.yaml --actor platform-team
+agentshield persona verify fixtures/safe/personas/security-analyst.yaml
+agentshield persona apply code-reviewer --actor deploy-bot --set focus=secrets
+agentshield persona applications
+```
+
+Assign a persona to an AI model — applies the persona (recording a receipt) and emits a
+provider-native request as JSON. No network call is made:
+
+```bash
+agentshield persona model code-reviewer --provider openai --model gpt-4o --actor deploy-bot --set focus=secrets --max-tokens 512
+```
+
+Supported providers: `openai` (chat completions), `anthropic`, `gemini`, `mistral`, `ollama`,
+`responses` (OpenAI Responses API), and `generic`.
+
+In an agent harness, one call applies the persona, builds the model request, and records the
+application as a sanitized `persona.applied` runtime event (prompt digest + receipt only) so it
+appears in the evidence graph:
+
+```ts
+import { AgentShieldGate, applyPersonaToModel } from '@agentshield/runtime';
+
+const gate = new AgentShieldGate({ policies });
+const { request, gateReceipt, event } = await applyPersonaToModel(
+  '.', 'code-reviewer',
+  { actor: 'deploy-bot', provider: 'openai', model: 'gpt-4o', variables: { focus: 'secrets' } },
+  { gate, context: { traceId: 'run-42', actor: 'deploy-bot' } }
+);
+```
 
 ## Local API and dashboard
 
@@ -127,6 +179,16 @@ normalized reports under `.agentshield/`.
   with ed25519, and the rules are bound to the manifest by SHA-256. `rulepack install` refuses a
   bundle that fails signature or digest verification, and `rulepack rollback` restores the previous
   installed version from local state. Scanner rules only change through a verified rulepack.
+- Jailbreak and persona-switching content is detected deterministically: framework artifacts such
+  as Athena/ColdBrew-style activation tokens (`AS-SC-028`) and known jailbreak personas — DAN,
+  Developer Mode, STAN, AIM, DUDE, plus multi-turn attack signatures (Crescendo, deceptive
+  alignment, reward hacking, sandbagging evals) — (`AS-SC-029`). Distinctive artifacts fire
+  standalone; generic or polysemous terms ("developer mode", "god mode", research terms) only
+  fire when they co-occur with jailbreak intent, so security-education and tooling documentation
+  do not produce findings. The same patterns are advisory warnings in persona templates; findings
+  never auto-block or mutate content.
+- Persona application receipts are hash-chained; a prompt digest (never the raw prompt) is all that
+  can be recorded as a `persona.applied` runtime event.
 - Cloud upload, automatic hard deletion, LLM classification, and telemetry are disabled.
 
 AgentShield cannot prove that a component is safe. Review declared behavior, dependency provenance,

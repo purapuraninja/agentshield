@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Memory } from './Memory.js';
 import { RuntimeTraces } from './RuntimeTraces.js';
 import { Policies } from './Policies.js';
+import { Personas } from './Personas.js';
 import { apiErrorMessage, apiFetch, getToken, setToken } from './api.js';
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
@@ -18,6 +19,7 @@ const icons: Record<string, ReactNode> = {
   scan: <><path d="M8 4H5a1 1 0 0 0-1 1v3M16 4h3a1 1 0 0 1 1 1v3M8 20H5a1 1 0 0 1-1-1v-3M16 20h3a1 1 0 0 0 1-1v-3"/><circle cx="12" cy="12" r="3"/></>,
   brain: <><path d="M9.5 4.5A3 3 0 0 0 5 7a3 3 0 0 0 0 5 3.5 3.5 0 0 0 4.5 5.3M14.5 4.5A3 3 0 0 1 19 7a3 3 0 0 1 0 5 3.5 3.5 0 0 1-4.5 5.3M12 3v18M8 9h4M12 15h4"/></>,
   trace: <><circle cx="5" cy="6" r="2"/><circle cx="19" cy="12" r="2"/><circle cx="7" cy="19" r="2"/><path d="M7 7.5 17 11M17.5 13.5 8.5 18"/></>,
+  mask: <><path d="M12 3 4.5 6.5v5c0 4.6 3 7.9 7.5 9.5 4.5-1.6 7.5-4.9 7.5-9.5v-5z"/><circle cx="9" cy="11" r="1.4"/><circle cx="15" cy="11" r="1.4"/><path d="M9.5 14.5c1 .8 4 .8 5 0"/></>,
   policy: <><path d="M6 3h9l3 3v15H6z"/><path d="M14 3v4h4M9 12h6M9 16h4"/></>,
   alert: <><path d="M12 3 2.8 19h18.4z"/><path d="M12 9v4M12 17h.01"/></>,
   check: <path d="m5 12 4 4L19 6"/>,
@@ -25,7 +27,7 @@ const icons: Record<string, ReactNode> = {
 };
 export function Icon({ name, size = 18 }: { name: string; size?: number }) { return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{icons[name]}</svg>; }
 
-const nav: Array<[string, string]> = [['grid','Overview'], ['scan','Findings'], ['brain','Memory'], ['trace','Runtime traces'], ['policy','Policies']];
+const nav: Array<[string, string]> = [['grid','Overview'], ['scan','Findings'], ['brain','Memory'], ['trace','Runtime traces'], ['mask','Personas'], ['policy','Policies']];
 const severityOrder: Severity[] = ['critical', 'high', 'medium', 'low', 'info'];
 
 export function App() {
@@ -76,6 +78,7 @@ export function App() {
       {active === 'Findings' && <Findings report={report} />}
       {active === 'Memory' && <Memory />}
       {active === 'Runtime traces' && <RuntimeTraces />}
+      {active === 'Personas' && <Personas />}
       {active === 'Policies' && <Policies />}
     </main>
   </div>;
@@ -101,9 +104,10 @@ function Findings({ report }: { report: Report | null }) {
   const [filter, setFilter] = useState<'all' | Severity>('all');
   if (!report) return <Empty icon="scan" title="No evidence yet" body="Run a local scan first to triage deterministic findings." />;
   const list = report.findings.filter((item) => filter === 'all' || item.severity === filter);
-  return <section className="findings-view"><div className="filterbar"><span>Filter by severity</span>{(['all',...severityOrder] as const).map((item) => <button key={item} className={filter === item ? 'selected' : ''} onClick={() => setFilter(item)}>{item}</button>)}</div>{list.map((finding) => <article className="panel finding" key={finding.id}><div className="finding-top"><span className={`badge ${finding.severity}`}>{finding.severity}</span><code>{finding.ruleId}</code><span>{finding.category}</span><span>{finding.confidence} confidence</span></div><h2>{finding.title}</h2><p>{finding.description}</p><div className="evidence"><div><strong>{compactPath(finding.evidence[0]?.path ?? '')}{finding.evidence[0]?.line ? `:${finding.evidence[0].line}` : ''}</strong><code>{finding.evidence[0]?.excerpt}</code></div></div><details><summary>Recommended remediation</summary><p>{finding.remediation}</p></details></article>)}{!list.length && <Empty icon="check" title="No matching findings" body="No open evidence is present for this filter." />}</section>;
+  return <section className="findings-view"><div className="filterbar"><span>Filter by severity</span>{(['all',...severityOrder] as const).map((item) => <button key={item} className={filter === item ? 'selected' : ''} onClick={() => setFilter(item)}>{item}</button>)}</div>{list.map((finding) => <article className="panel finding" key={finding.id}><div className="finding-top"><span className={`badge ${finding.severity}`}>{finding.severity}</span><code>{finding.ruleId}</code>{isJailbreakRule(finding.ruleId) && <span className="badge jailbreak">jailbreak</span>}<span>{finding.category}</span><span>{finding.confidence} confidence</span></div><h2>{finding.title}</h2><p>{finding.description}</p><div className="evidence"><div><strong>{compactPath(finding.evidence[0]?.path ?? '')}{finding.evidence[0]?.line ? `:${finding.evidence[0].line}` : ''}</strong><code>{finding.evidence[0]?.excerpt}</code></div></div><details><summary>Recommended remediation</summary><p>{finding.remediation}</p></details></article>)}{!list.length && <Empty icon="check" title="No matching findings" body="No open evidence is present for this filter." />}</section>;
 }
 
 export function Empty({ icon, title, body }: { icon: string; title: string; body: string }) { return <section className="empty panel"><span><Icon name={icon} size={29}/></span><p className="overline">AgentShield</p><h2>{title}</h2><p>{body}</p></section>; }
+function isJailbreakRule(ruleId: string) { return ruleId === 'AS-SC-028' || ruleId === 'AS-SC-029'; }
 function displayName(value: string) { return value.replace(/([A-Z])/g, ' $1').replace(/^./, (text) => text.toUpperCase()); }
 function compactPath(value: string) { const parts = value.replaceAll('\\','/').split('/'); return parts.length > 3 ? `…/${parts.slice(-3).join('/')}` : value; }

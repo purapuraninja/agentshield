@@ -108,6 +108,20 @@
       "kind": "scanner",
       "target": "T-14-wildcard-mcp/mcp.json",
       "expect": ["AS-SC-025"]
+    },
+    {
+      "id": "T-15",
+      "title": "Skill embeds a classic jailbreak persona (DAN, Developer Mode) (Indonesian and English)",
+      "kind": "scanner",
+      "target": "T-15-jailbreak-prompt/SKILL.md",
+      "expect": ["AS-SC-029"]
+    },
+    {
+      "id": "T-16",
+      "title": "Skill carries an Athena/ColdBrew-style jailbreak activation banner (Indonesian and English)",
+      "kind": "scanner",
+      "target": "T-16-athena-jailbreak/SKILL.md",
+      "expect": ["AS-SC-028"]
     }
   ]
 }

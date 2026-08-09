@@ -121,6 +121,67 @@ describe('local API', () => {
     await app.close();
   });
 
+  it('registers, applies, builds a model request, and audits personas over the API', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'agentshield-api-'));
+    const app = await buildServer({ dataDir: directory, logger: false });
+    const definition = {
+      id: 'code-reviewer', name: 'Code Reviewer', author: 'platform-team',
+      systemPrompt: 'You are the reviewer. Check {{focus}} with {{depth}} analysis.',
+      variables: [
+        { name: 'focus', required: true },
+        { name: 'depth', default: 'deep' }
+      ]
+    };
+    const created = await app.inject({ method: 'POST', url: '/v1/personas', payload: { definition, actor: 'platform' } });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().data.id).toBe('code-reviewer');
+
+    const list = await app.inject({ method: 'GET', url: '/v1/personas' });
+    expect(list.json().data).toHaveLength(1);
+    const found = await app.inject({ method: 'GET', url: '/v1/personas/code-reviewer' });
+    expect(found.json().data.version).toBe(1);
+    const missing = await app.inject({ method: 'GET', url: '/v1/personas/nope' });
+    expect(missing.statusCode).toBe(404);
+
+    const applied = await app.inject({ method: 'POST', url: '/v1/personas/code-reviewer/apply', payload: { actor: 'deploy-bot', variables: { focus: 'secrets' } } });
+    expect(applied.statusCode).toBe(200);
+    expect(applied.json().data.prompt).toContain('Check secrets with deep analysis');
+    expect(applied.json().data.receipt).toMatch(/^persona1:/);
+
+    const modelRequest = await app.inject({ method: 'POST', url: '/v1/personas/code-reviewer/model-request', payload: { actor: 'deploy-bot', provider: 'openai', model: 'gpt-4o', maxTokens: 512, variables: { focus: 'secrets' } } });
+    expect(modelRequest.statusCode).toBe(200);
+    expect(modelRequest.json().data.request.messages[0].role).toBe('system');
+    expect(modelRequest.json().data.request.max_tokens).toBe(512);
+    expect(modelRequest.json().data.receipt).toMatch(/^persona1:/);
+
+    const badProvider = await app.inject({ method: 'POST', url: '/v1/personas/code-reviewer/model-request', payload: { actor: 'deploy-bot', provider: 'ollama', model: 'x' } });
+    expect(badProvider.statusCode).toBe(400);
+
+    const audit = await app.inject({ method: 'GET', url: '/v1/personas/applications' });
+    expect(audit.json().chain.valid).toBe(true);
+    expect(audit.json().applications).toHaveLength(2);
+
+    const removed = await app.inject({ method: 'DELETE', url: '/v1/personas/code-reviewer', payload: { actor: 'platform' } });
+    expect(removed.statusCode).toBe(200);
+    const empty = await app.inject({ method: 'GET', url: '/v1/personas' });
+    expect(empty.json().data).toHaveLength(0);
+    await app.close();
+  });
+
+  it('registers a persona from YAML definitionText and rejects malformed YAML with invalid_request', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'agentshield-api-'));
+    const app = await buildServer({ dataDir: directory, logger: false });
+    const yaml = `id: support-engineer\nname: Support Engineer\nauthor: platform-team\nsystemPrompt: |\n  You are the support engineer. Answer with a {{tone}} tone.\nvariables:\n  - name: tone\n    default: helpful\n`;
+    const created = await app.inject({ method: 'POST', url: '/v1/personas', payload: { definitionText: yaml, actor: 'platform' } });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().data.id).toBe('support-engineer');
+
+    const malformed = await app.inject({ method: 'POST', url: '/v1/personas', payload: { definitionText: 'a: [unclosed', actor: 'platform' } });
+    expect(malformed.statusCode).toBe(400);
+    expect(malformed.json().error.code).toBe('invalid_request');
+    await app.close();
+  });
+
   it('rejects requests without a valid bearer token when auth is enabled', async () => {
     const token = 'as_test_server_token_456';
     const app = await buildServer({ logger: false, auth: { enabled: true, tokenHash: hashToken(token) } });

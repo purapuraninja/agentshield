@@ -8,6 +8,9 @@ input for AgentShield's deterministic scanner. Running any of these scripts or c
 - `download-execute/install.sh` — `curl … | sh` and `chmod +x` on untrusted downloads
 - `dynamic-eval/index.ts`, `shell-interpolation/command.ts` — eval/exec of untrusted input
 - `python-exfiltration/index.py`, `exfiltration/index.ts` — send secrets to untrusted endpoints
+- `athena-jailbreak/SKILL.md`, `athena-jailbreak/MEMORY.md` — Athena/ColdBrew-style jailbreak
+  activation banner and memory-wipe prompt (scan-only; never install into an agent harness)
+- `jailbreak-prompt/SKILL.md` — classic jailbreak personas (DAN, Developer Mode, STAN, AIM, DUDE)
 
 **Rules for handling this corpus:**
 

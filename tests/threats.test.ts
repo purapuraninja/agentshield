@@ -38,7 +38,7 @@ function firstId(record: { memoryId: string }): string {
   return record.memoryId;
 }
 
-describe('threat scenario corpus T-01..T-10', () => {
+describe('threat scenario corpus T-01..T-16', () => {
   it('covers every threat id from the plan', () => {
     const ids = manifest.scenarios.map((item) => item.id);
     for (let index = 1; index <= 10; index++) {

@@ -88,7 +88,7 @@ function relationFor(event: RuntimeEvent): string {
     'memory.written': 'stored_as', 'memory.retrieved': 'retrieved', 'policy.evaluated': 'evaluated',
     'approval.requested': 'requested_approval', 'approval.resolved': 'approved_or_denied', 'tool.requested': 'requested',
     'tool.executed': 'executed', 'tool.failed': 'failed', 'memory.quarantined': 'quarantined', 'memory.restored': 'restored',
-    'agent.run.started': 'started', 'agent.run.completed': 'completed'
+    'persona.applied': 'applied_persona', 'agent.run.started': 'started', 'agent.run.completed': 'completed'
   } as Record<RuntimeEvent['type'], string>)[event.type];
 }
 
@@ -146,3 +146,4 @@ export {
   AgentShieldGate,
   type GateConfig, type GateContext, type ToolRequest, type MemoryWriteRequest, type GateResult
 } from './sdk.js';
+export { applyPersonaToModel, type PersonaGateRecording, type PersonaModelApplication, type PersonaModelOptions } from './persona.js';

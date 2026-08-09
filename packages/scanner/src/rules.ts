@@ -166,6 +166,49 @@ export const staticRules: StaticRule[] = [
     patterns: [/[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/],
     remediation: 'Remove invisible control characters, normalize trusted text, and render control-code locations during review.',
     extensions: ['.md', '.mdx', '.html', '.htm', '.json', '.yaml', '.yml', '.toml'], owner: 'core-security', reviewDate: '2026-08-04', limitations: 'Some internationalized text may legitimately contain directional controls.'
+  },
+  {
+    id: 'AS-SC-028', title: 'Jailbreak activation framework (Athena/ColdBrew-style)', severity: 'high', confidence: 'medium', category: 'prompt-injection',
+    description: 'Content carries jailbreak activation artifacts: bracket-form control tokens, unlock profiles, or wipe-and-rewrite prompts that switch an agent into an unconstrained red-team mode.',
+    patterns: [
+      /\[\[AX:(?:MAX|STATUS|PROFILE|CHAIN|RESET)[^\]]*\]\]/,
+      /(?:six domains unlocked|\bmax-breaker\b)/i,
+      // Generic unlock phrases only fire when they co-occur with the distinctive activation
+      // artifacts, so AI-safety research or education text that merely discusses jailbreaks does
+      // not produce a high-severity finding.
+      /(?:Athena online|jailbreak prompt|full kill-chain|anti-cheat bypass|memory manipulation)[^\n]{0,120}(?:\[\[AX:|max-breaker|six domains unlocked|Athena online)/i,
+      /(?:SOUL\.md|MEMORY\.md|USER\.md)[^\n]{0,80}(?:wipe|wiped|overwrite|rewrite)/i
+    ],
+    remediation: 'Remove activation banners and embedded unlock protocols; run the agent under the operator-published policy with no self-referential mode switching.',
+    extensions: ['.md', '.mdx', '.txt', '.json', '.jsonl', '.yaml', '.yml', '.toml'], owner: 'core-security', reviewDate: '2026-08-09',    limitations: 'MEMORY.md/SOUL.md/USER.md rewrite phrasing can appear in benign agent-memory docs; generic phrases require co-occurrence with the activation artifacts.'
+  },
+  {
+    id: 'AS-SC-029', title: 'Known jailbreak persona or mode (DAN, Dev Mode, STAN, AIM, DUDE)', severity: 'high', confidence: 'medium', category: 'prompt-injection',
+    description: 'Content switches the agent into a known jailbreak persona or mode that instructs it to ignore safety controls and answer without restrictions.',
+    patterns: [
+      /Do Anything Now/i,
+      // "DAN:" alone is a common speaker tag in dialogue, so only "DAN mode" / "DAN 11.0" fire.
+      /\bDAN(?:\s+(?:mode|v?\d+(?:\.\d+)?))/i,
+      /\bSTAN\b[^\n]{0,80}Smarter Than a Normal AI/i,
+      /\bAIM\b[^\n]{0,80}Always Intelligent and Machiavellian/i,
+      /\bDUDE\b[^\n]{0,40}mode/i,
+      // "developer mode" alone is generic (browsers, editors); it only fires when paired with
+      // jailbreak intent on the same line.
+      /(?:developer|dev) mode[^\n]{0,80}\b(?:do anything now|uncensored|no restrictions)\b/i,
+      // "god mode" alone is a game cheat and "GodMode" is a Windows feature; both require
+      // jailbreak-intent co-occurrence.
+      /(?:god mode|GodMode)[^\n]{0,80}\b(?:do anything now|jailbreak|no restrictions|unrestricted|unfiltered|uncensored)\b/i,
+      /(?:unfiltered mode|uncensored mode)/i,
+      // Multi-turn and alignment-attack signatures. All are research terms too, so each requires
+      // attack-context co-occurrence to avoid flagging AI-safety literature that merely names them.
+      // Every intent word is word-bounded so a term like "mode" cannot match inside "models".
+      /\bCrescendo\b[^\n]{0,60}\b(?:attack|jailbreak)\b/i,
+      /\bdeceptive alignment\b[^\n]{0,100}\b(?:jailbreak|attack|sandbag(?:ging)?|deploy)\b/i,
+      /(?:reward hacking|specification gaming)[^\n]{0,100}\b(?:jailbreak|mode|prompt|instruct|enable|deploy)\b/i,
+      /\bsandbag(?:ging)?\b[^\n]{0,100}\b(?:eval(?:uation)?|benchmark(?:s)?|safety test)\b/i
+    ],
+    remediation: 'Remove persona-switching jailbreak instructions; run the agent under the operator-published policy with fixed role boundaries.',
+    extensions: ['.md', '.mdx', '.txt', '.json', '.jsonl', '.yaml', '.yml', '.toml'], owner: 'core-security', reviewDate: '2026-08-09',    limitations: 'Fictional dialogue or security research may quote the same mode names; generic terms require jailbreak-intent co-occurrence and multi-turn/alignment names require attack-context co-occurrence.'
   }
 ];
 

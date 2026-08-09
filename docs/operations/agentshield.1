@@ -48,6 +48,22 @@ Read-only memory audit. \fB--format\fP terminal|json|html|sarif|agentbom|bundle.
 .B memory quarantine|restore <target> <memoryId>
 Reversibly quarantine or restore a memory record without deleting the source.
 .TP
+.B persona create|list|show|render|apply|verify|applications|remove
+Define, validate, render, and apply agent personas with a verifiable, hash-chained audit trail.
+\fBpersona create <file.yaml> --actor <name>\fP registers a persona; \fBpersona render <id>\fP
+renders the system prompt with \fB--set name=value\fP overrides.
+.TP
+.B persona apply <id> \-\-actor <name>
+Apply a persona: render, inject, and record an immutable application receipt (raw prompt is never
+stored, only its hash). \fBpersona verify <file>\fP validates a definition without registering;
+\fBpersona applications\fP lists receipts and verifies the chain.
+.TP
+.B persona model <id> \-\-provider <openai|anthropic|gemini|mistral|ollama|responses|generic> \-\-model <name> \-\-actor <name>
+Apply a persona and emit a provider-native AI model request (OpenAI messages, Anthropic system,
+Gemini systemInstruction, Mistral messages, Ollama messages + options, OpenAI Responses instructions,
+or generic) as JSON, including the application receipt. Sampling options:
+\fB--temperature\fP, \fB--max-tokens\fP, \fB--top-p\fP. No network call is made.
+.TP
 .B runtime ingest|trace
 Ingest sanitized runtime events and build a source-to-action evidence graph.
 .TP

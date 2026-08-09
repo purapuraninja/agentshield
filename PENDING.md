@@ -25,7 +25,7 @@ Terakhir diperbarui: 2026-08-09.
 - [x] Quarantine/restore lokal berbasis sidecar dengan snapshot dan hash-chained audit log.
 - [x] Sanitized runtime event store dan evidence graph lokal.
 - [x] Loopback REST API dan dashboard lokal untuk overview, scan, findings, serta permissions.
-- [x] Lint, typecheck, 189 automated tests, cross-platform CI skeleton, Docker API, dan fixtures dasar.
+- [x] Lint, typecheck, 231 automated tests, cross-platform CI skeleton, Docker API, dan fixtures dasar.
 
 ## Ringkasan prioritas
 
@@ -107,21 +107,30 @@ Terakhir diperbarui: 2026-08-09.
 
 - [x] Golden regression tests tersedia untuk seluruh production static rules.
 - [x] Minimal satu true-positive dan dua safe negative fixture per production rule.
-- [x] Corpus 15 intentionally vulnerable fixtures tersedia di `fixtures/vulnerable/` (dengan
+- [x] Corpus 18 intentionally vulnerable fixtures tersedia di `fixtures/vulnerable/` (dengan
   README peringatan agar tidak pernah dieksekusi) beserta manifest ekspektasi rule
   (`manifest.json`) dan fixture runner (`tests/vulnerable-corpus.test.ts`) yang membuktikan
   recall 100% rule ID + evidence + remediasi serta nol high-severity FP pada safe corpus
-  (severity/confidence per rule dicover golden matrix). Corpus 30 ekstensi publik masih
-  diperlukan (butuh pengumpulan eksternal).
+  (severity/confidence per rule dicover golden matrix). Termasuk `athena-jailbreak/`
+  (SKILL.md + MEMORY.md) yang memodelkan activation banner dan memory-wipe prompt asli
+  framework jailbreak Athena/ColdBrew (`AS-SC-028`), serta `jailbreak-prompt/` untuk persona
+  jailbreak klasik DAN/Developer Mode/STAN/AIM/DUDE dan pola multi-turn (Crescendo attack,
+  deceptive alignment, reward hacking, sandbagging evals) (`AS-SC-029`, semua istilah generik
+  wajib berko-okurensi dengan konteks serangan). Skenario threat `T-15` (jailbreak persona) dan
+  `T-16` (activation banner Athena) ditambahkan di `fixtures/threats/` dan dicover
+  `tests/threats.test.ts`. Corpus 30 ekstensi publik masih diperlukan (butuh pengumpulan
+  eksternal).
 - [~] Corpus multilingual, khususnya instruksi Indonesia dan Inggris. Skenario T-04, T-11, T-12,
   T-13, dan T-14 sudah mencakup instruksi Indonesia dan Inggris; corpus 30 ekstensi publik masih
   diperlukan (butuh pengumpulan eksternal).
 - [~] Fixture precision, recall, confusion matrix, dan hasil per rule tersedia; public-corpus metrics,
   suppression rate, dan real-world false-positive rate belum tersedia.
 - [~] Rule owner, last review date, dan stale-review quality gate tersedia; approval workflow belum ada.
-- [~] Deterministic seeded mutation/fuzz tests untuk parser tersedia (`packages/parsers/src/fuzz.test.ts`)
-  dan sudah menemukan satu parser crash nyata; fuzzing untuk malformed memory record dan runtime event
-  schema belum ada.
+- [x] Deterministic seeded mutation/fuzz tests tersedia untuk parser (`packages/parsers/src/fuzz.test.ts`,
+  sudah menemukan satu parser crash nyata), malformed memory record (`packages/memory/src/fuzz.test.ts`),
+  dan runtime event schema (`packages/runtime/src/fuzz.test.ts`). Ketiganya seeded sehingga CI failure
+  dapat direplay persis; invariants runtime juga membuktikan raw payload tidak pernah lolos ke event
+  tersimpan (selalu diganti content-hash).
 
 ### Cara mengimplementasikan
 
@@ -288,15 +297,34 @@ Terakhir diperbarui: 2026-08-09.
 - [x] Package baru `@agentshield/persona`: definisi persona versi (id, author, system-prompt template
   dengan variabel deklaratif), store persisted content-addressed (`.agentshield/personas.json`),
   render dengan override variabel, dan **scanner bahasa advisory**: instruction-override,
-  safety-bypass, atau secret-exfiltration (EN + ID) di template, default variabel, atau nilai
-  override ditampilkan sebagai **warning, bukan penolakan** — operator adalah pemilik persona dan
-  yang memutuskan; hanya masalah struktural (schema, variabel tak dideklarasikan, required hilang)
-  yang menjadi error.
+  safety-bypass, secret-exfiltration (EN + ID), serta token aktivasi jailbreak gaya
+  Athena/ColdBrew (`[[AX:…]]`, `max-breaker`, unlock phrasing) di template, default variabel,
+  atau nilai override ditampilkan sebagai **warning, bukan penolakan** — operator adalah pemilik
+  persona dan yang memutuskan; hanya masalah struktural (schema, variabel tak dideklarasikan,
+  required hilang) yang menjadi error.
 - [x] `applyPersona` merender prompt, mencatat receipt immutable hash-chained
   (`persona-applications.jsonl`, prompt mentah tidak pernah disimpan, hanya hash-nya), dan
   `verifyApplicationChain` mendeteksi tampering pada rantai aplikasi.
-- [x] CLI: `agentshield persona create|list|show|render|apply|verify|applications|remove` dengan
+- [x] CLI: `agentshield persona create|list|show|render|apply|model|verify|applications|remove` dengan
   fixture contoh aman `fixtures/safe/personas/code-reviewer.yaml`.
+- [x] AI model provider adapters (`buildModelRequest`): prompt persona yang sudah dirender diterjemahkan
+  ke request provider-native untuk OpenAI (`messages[0].role=system`), Anthropic (`system` +
+  `max_tokens` default), Gemini (`systemInstruction.parts`), dan generic, dengan validasi
+  provider/model serta parameter sampling opsional. CLI `agentshield persona model <id>
+  --provider <openai|anthropic|gemini|generic> --model <name>` mengaplikasikan persona (mencatat
+  receipt hash-chained) lalu mengeluarkan JSON request siap-inject beserta applicationId dan receipt;
+  tidak ada panggilan jaringan maupun pembacaan kredensial — tetap local-first.
+- [x] Runtime SDK: `AgentShieldGate.recordPersona` mencatat aplikasi persona sebagai event runtime
+  `persona.applied` (hanya prompt digest + receipt; prompt mentah tidak pernah masuk event stream),
+  sehingga aplikasi persona ikut tampil di evidence graph dan trace.
+- [x] Bridge `applyPersonaToModel` (package `@agentshield/runtime`): satu panggilan untuk harness —
+  apply persona dari store → build request provider-native → catat event `persona.applied` di gate
+  (saat gate diberikan) — plus fixture aman kedua `fixtures/safe/personas/security-analyst.yaml` dan
+  panduan CLI + SDK di `docs/operations/install.md`.
+- [x] REST API `/v1/personas` (list/get/register dengan YAML `definitionText` atau objek
+  `definition`, remove, apply, model-request dengan validasi sebelum receipt dicatat, applications +
+  verifikasi chain) dan dashboard view "Personas" untuk registrasi, apply + build model request
+  per provider/model, serta audit trail aplikasi. Diuji API contract dan browser end-to-end.
 
 ## 7. Runtime SDK, policy gate, dan correlation — P1
 
@@ -416,7 +444,9 @@ evaluasi lokal.
 - [ ] Signed CLI releases, containers, rulepacks, adapters, and provenance attestations.
 - [ ] Dependency, secret, license, SAST, container, dan IaC scanning yang memblokir critical issues.
 - [ ] SBOM untuk setiap release artifact.
-- [ ] Fuzzing parser, malformed memory, Unicode, oversized input, dan event schema.
+- [x] Fuzzing deterministic untuk parser, malformed memory record, dan runtime event schema
+  (lihat section 13) dengan corpus hostile Unicode (zero-width, RTL, BOM, surrogate) dan oversized
+  input; archive bomb/path traversal tetap dicover regression test scanner (section 1).
 - [ ] Archive bomb, symlink, path traversal, decompression ratio, resource exhaustion, dan Windows path
   edge-case tests.
 - [ ] Log/crash-dump secret leakage tests di seluruh service.

@@ -54,6 +54,58 @@ mandb
 man agentshield
 ```
 
+## Agent personas
+
+Personas are trusted, versioned system-prompt templates with declared variables. Registering
+validates structure; applying renders the prompt and records an immutable, hash-chained receipt in
+`.agentshield/persona-applications.jsonl` (the raw prompt is never stored — only its hash). The
+injection scanner is advisory: operator-owned personas are never rejected for content, only for
+structural problems.
+
+Register and apply a persona:
+
+```bash
+# Register from a YAML definition (see fixtures/safe/personas/)
+agentshield persona create fixtures/safe/personas/code-reviewer.yaml --actor platform-team
+
+# Validate a definition without registering
+agentshield persona verify fixtures/safe/personas/security-analyst.yaml
+
+# Render or apply with variable overrides
+agentshield persona render code-reviewer --set focus=secrets
+agentshield persona apply code-reviewer --actor deploy-bot --reason "release 1.4" --set focus=secrets
+
+# Inspect the application audit trail
+agentshield persona applications
+```
+
+Assign a persona to an AI model. This applies the persona (recording a receipt) and emits a
+provider-native request (OpenAI `messages`, Anthropic `system`, Gemini `systemInstruction`, or
+generic) — no network call is made:
+
+```bash
+agentshield persona model code-reviewer \
+  --provider openai --model gpt-4o \
+  --actor deploy-bot --reason "release 1.4" \
+  --set focus=secrets --max-tokens 512 \
+  --output request.json
+```
+
+In an agent harness, apply the persona and record it into the runtime evidence graph in one call:
+
+```ts
+import { AgentShieldGate, applyPersonaToModel } from '@agentshield/runtime';
+
+const gate = new AgentShieldGate({ policies });
+const { applied, request, gateReceipt, event } = await applyPersonaToModel(
+  '.', 'code-reviewer',
+  { actor: 'deploy-bot', provider: 'openai', model: 'gpt-4o', variables: { focus: 'secrets' } },
+  { gate, context: { traceId: 'run-42', actor: 'deploy-bot' } }
+);
+// request.request holds the system portion (see request.injectedAs); append your conversation
+// messages and send it. event.type === 'persona.applied'; gateReceipt is the signed as1: receipt.
+```
+
 ## Upgrade
 
 ```bash

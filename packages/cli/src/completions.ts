@@ -1,7 +1,8 @@
 export type Shell = 'bash' | 'zsh' | 'fish';
 export const SUPPORTED_SHELLS: readonly Shell[] = ['bash', 'zsh', 'fish'];
 
-const COMMANDS = ['scan', 'scan-mcp', 'permissions', 'diff', 'policy', 'report', 'rules', 'explain', 'baseline', 'memory', 'runtime', 'telemetry', 'completion'];
+const COMMANDS = ['scan', 'scan-mcp', 'permissions', 'diff', 'policy', 'report', 'rules', 'explain', 'baseline', 'memory', 'persona', 'runtime', 'telemetry', 'completion'];
+const PERSONA_SUBCOMMANDS = 'create list show render apply model verify applications remove';
 
 const bash = `# AgentShield bash completion
 _agentshield_completion() {
@@ -18,6 +19,7 @@ _agentshield_completion() {
     rules) COMPREPLY=( \$(compgen -W "list" -- "\$cur") ); return 0 ;;
     baseline) COMPREPLY=( \$(compgen -W "create add validate prune" -- "\$cur") ); return 0 ;;
     memory) COMPREPLY=( \$(compgen -W "audit quarantine restore quarantine-list" -- "\$cur") ); return 0 ;;
+    persona) COMPREPLY=( \$(compgen -W "${PERSONA_SUBCOMMANDS}" -- "\$cur") ); return 0 ;;
     runtime) COMPREPLY=( \$(compgen -W "ingest trace" -- "\$cur") ); return 0 ;;
     telemetry) COMPREPLY=( \$(compgen -W "status enable disable preview" -- "\$cur") ); return 0 ;;
     completion) COMPREPLY=( \$(compgen -W "bash zsh fish" -- "\$cur") ); return 0 ;;
@@ -42,6 +44,7 @@ _agentshield() {
     rules) _values 'subcommand' list ;;
     baseline) _values 'subcommand' create add validate prune ;;
     memory) _values 'subcommand' audit quarantine restore quarantine-list ;;
+    persona) _values 'subcommand' create list show render apply model verify applications remove ;;
     runtime) _values 'subcommand' ingest trace ;;
     telemetry) _values 'subcommand' status enable disable preview ;;
     completion) _values 'shell' bash zsh fish ;;
@@ -57,6 +60,7 @@ complete -c agentshield -n '__fish_seen_subcommand_from policy' -a 'check simula
 complete -c agentshield -n '__fish_seen_subcommand_from rules' -a 'list'
 complete -c agentshield -n '__fish_seen_subcommand_from baseline' -a 'create add validate prune'
 complete -c agentshield -n '__fish_seen_subcommand_from memory' -a 'audit quarantine restore quarantine-list'
+complete -c agentshield -n '__fish_seen_subcommand_from persona' -a '${PERSONA_SUBCOMMANDS}'
 complete -c agentshield -n '__fish_seen_subcommand_from runtime' -a 'ingest trace'
 complete -c agentshield -n '__fish_seen_subcommand_from telemetry' -a 'status enable disable preview'
 complete -c agentshield -n '__fish_seen_subcommand_from completion' -a 'bash zsh fish'

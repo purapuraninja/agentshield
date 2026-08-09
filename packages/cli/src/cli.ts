@@ -16,8 +16,9 @@ import { renderAgentBom, renderHtml, renderMemoryAgentBom, renderMemoryEvidenceB
 import { auditMemory, classifyMemoryTypes, getMemoryRule, listQuarantine, memoryRules, quarantineMemory, reconcileMemoryInventory, restoreMemory, type AuditOptions,
   planRemediation, approveRemediation, executeRemediation, rollbackRemediation, rejectRemediation, expungeRemediation, listRemediationPlans, getRemediationPlan } from '@agentshield/memory';
 import {
-  applyPersona, listPersonaApplications, listPersonas, getPersona, loadPersonaFile, registerPersona,
-  removePersona, renderPersona, validatePersona, verifyApplicationChain
+  applyPersona, buildModelRequest, listPersonaApplications, listPersonas, getPersona, loadPersonaFile,
+  MODEL_PROVIDERS, modelRequestOptionsSchema, registerPersona, removePersona, renderPersona,
+  validatePersona, verifyApplicationChain
 } from '@agentshield/persona';
 import { EventStore, buildEvidenceGraph, createRuntimeEvent } from '@agentshield/runtime';
 import {
@@ -390,6 +391,33 @@ persona.command('apply <id>').description('Apply a persona: render, inject, and 
       `Receipt: ${applied.receipt}`, ...(applied.warnings.length ? ['', 'Warnings:', ...applied.warnings.map((warning) => `- ${warning}`)] : [])
     ].join('\n'));
   });
+persona.command('model <id>').description('Apply a persona and build a provider-native AI model request (openai, anthropic, gemini, generic)')
+  .requiredOption('--provider <name>', `model provider: ${MODEL_PROVIDERS.join(', ')}`)
+  .requiredOption('--model <name>', 'model identifier, e.g. gpt-4o')
+  .requiredOption('--actor <name>').option('--reason <text>').option('--target <path>', 'store location', '.')
+  .option('--set <name=value>', 'set a persona variable (repeatable)', collectVariables, [])
+  .option('--temperature <number>', 'sampling temperature 0..2').option('--max-tokens <count>', 'max completion tokens')
+  .option('--top-p <number>', 'nucleus sampling 0..1')
+  .option('-o, --output <path>', 'write the JSON request to a file')
+  .action(async (id, options) => {
+    // Validate provider/model/sampling up front so a bad invocation fails BEFORE an application
+    // receipt is chained into the audit log: an application is only recorded once the request
+    // is actually buildable.
+    const requestOptions = modelRequestOptionsSchema.parse({
+      provider: options.provider, model: options.model,
+      temperature: numericOption(options.temperature, '--temperature'),
+      maxTokens: numericOption(options.maxTokens, '--max-tokens'),
+      topP: numericOption(options.topP, '--top-p')
+    });
+    const applied = await applyPersona(personaTarget(options.target), id, {
+      actor: options.actor, reason: options.reason, variables: personaVariables(options.set)
+    });
+    for (const warning of applied.warnings) console.error(`Warning: ${warning}`);
+    const built = buildModelRequest(applied.prompt, requestOptions);
+    await emit(safeJson({
+      applicationId: applied.applicationId, receipt: applied.receipt, ...built
+    }), options.output);
+  });
 persona.command('verify <file>').description('Validate a persona definition file without registering it').option('--json', 'JSON output')
   .action(async (file, options) => {
     const result = validatePersona(loadPersonaFile(await readFile(resolve(file), 'utf8')));
@@ -418,6 +446,14 @@ persona.command('remove <id>').description('Remove a registered persona').requir
 
 function collectVariables(value: string, previous: string[]): string[] {
   return [...previous, value];
+}
+
+function numericOption(value: string | undefined, flag: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (value.trim() === '') throw new Error(`${flag} must be a number`);
+  const number = Number(value);
+  if (!Number.isFinite(number)) throw new Error(`${flag} must be a number`);
+  return number;
 }
 
 program.command('report <input>').description('Convert a canonical JSON report').requiredOption('-f, --format <format>', 'html, sarif, or agentbom').option('-o, --output <path>')

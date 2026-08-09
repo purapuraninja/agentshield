@@ -38,6 +38,16 @@ export interface GateResult {
   approved: boolean;
 }
 
+export interface PersonaRecordRequest {
+  personaId: string;
+  version: number;
+  /** sha256 of the rendered prompt (from @agentshield/persona), never the prompt itself. */
+  promptHash: string;
+  /** persona1: receipt from @agentshield/persona's application audit chain. */
+  receipt?: string;
+  reason?: string;
+}
+
 /**
  * Synchronous policy gate for AI agent runtime. Intercepts tool calls and memory writes before they
  * execute, evaluates runtime policy, emits sanitized events, and returns signed action receipts.
@@ -77,6 +87,30 @@ export class AgentShieldGate {
     const action = this.resolveAction(decision.action, request.sensitivity);
     this.emit(event);
     return { action, policyIds: decision.policyIds, reason: decision.reason, event, receipt: this.signReceipt(event, action), approved: action === 'allow' || action === 'warn' };
+  }
+
+  /**
+   * Records that a persona was applied to the running agent. Only hash-derived evidence is stored
+   * (the prompt digest and the persona receipt) — the raw prompt never enters the runtime event
+   * stream. The event carries `persona.applied` with the digest under the `digest` metadata key so
+   * the event sanitizer does not re-hash it; the value itself is already a one-way hash.
+   */
+  recordPersona(request: PersonaRecordRequest, context: GateContext): GateResult {
+    const event = createRuntimeEvent({
+      traceId: context.traceId, parentId: context.parentId, causalityIds: context.causalityIds,
+      type: 'persona.applied', actor: context.actor, target: request.personaId,
+      metadata: {
+        personaId: request.personaId, version: request.version, digest: request.promptHash,
+        receipt: request.receipt ?? '', reason: request.reason ?? ''
+      }
+    });
+    const action: PolicyAction = 'allow';
+    this.emit(event);
+    return {
+      action, policyIds: [],
+      reason: `Persona ${request.personaId} v${request.version} recorded as applied`,
+      event, receipt: this.signReceipt(event, action), approved: true
+    };
   }
 
   requestApproval(tool: string, context: GateContext): RuntimeEvent {

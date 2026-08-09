@@ -5,6 +5,7 @@ import cors from '@fastify/cors';
 import { createId, memoryAuditReportSchema, scanReportSchema } from '@agentshield/core';
 import { evaluatePolicy, scanTarget, staticRules, getRule, type PolicyFile } from '@agentshield/scanner';
 import { auditMemory, classifyMemoryTypes, getMemoryRule, listQuarantine, listRemediationPlans, memoryRules, planRemediation, approveRemediation, executeRemediation, rollbackRemediation, quarantineMemory, reconcileMemoryInventory, restoreMemory } from '@agentshield/memory';
+import { applyPersona, buildModelRequest, getPersona, listPersonaApplications, listPersonas, loadPersonaFile, modelRequestOptionsSchema, registerPersona, removePersona, verifyApplicationChain } from '@agentshield/persona';
 import { EventStore, createRuntimeEvent } from '@agentshield/runtime';
 import { renderMemoryEvidenceBundle, renderMemorySarif } from '@agentshield/reports';
 import {
@@ -194,12 +195,86 @@ export async function buildServer(options: ApiOptions = {}): Promise<FastifyInst
     return { data: await classifyMemoryTypes(body.target, { table: body.table, contentColumn: body.contentColumn }) };
   });
 
+  // Persona store lives under the data directory; the persona package keeps its sidecar in
+  // `<target>/.agentshield/personas.json` + `persona-applications.jsonl`.
+  const personaTarget = join(dataDir, 'personas');
+  const personaError = (request: { id?: string }, status: number, code: string, message: string) => ({
+    error: { code, message, requestId: request.id }
+  });
+  app.get('/v1/personas', async () => ({ data: await listPersonas(personaTarget) }));
+  app.get('/v1/personas/applications', async () => {
+    const applications = await listPersonaApplications(personaTarget);
+    return { chain: verifyApplicationChain(applications), applications };
+  });
+  app.get('/v1/personas/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const persona = await getPersona(personaTarget, id);
+    return persona ? { data: persona } : reply.status(404).send(personaError(request, 404, 'not_found', 'Persona not found'));
+  });
+  app.post('/v1/personas', async (request, reply) => {
+    const body = request.body as { definition?: unknown; definitionText?: string; actor: string };
+    if (!body?.actor) return reply.status(400).send(personaError(request, 400, 'invalid_request', 'actor is required'));
+    try {
+      let definition: unknown;
+      if (body.definition !== undefined) definition = body.definition;
+      else if (typeof body.definitionText === 'string' && body.definitionText.trim()) definition = loadPersonaFile(body.definitionText);
+      else return reply.status(400).send(personaError(request, 400, 'invalid_request', 'definition or definitionText is required'));
+      return reply.status(201).send({ data: await registerPersona(personaTarget, definition, body.actor) });
+    } catch (error) {
+      return reply.status(400).send(personaError(request, 400, 'invalid_request', error instanceof Error ? error.message : String(error)));
+    }
+  });
+  app.delete('/v1/personas/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const actor = (request.body as { actor?: string } | undefined)?.actor;
+    if (!actor) return reply.status(400).send(personaError(request, 400, 'invalid_request', 'actor is required'));
+    const removed = await removePersona(personaTarget, id, actor);
+    return removed ? { data: removed } : reply.status(404).send(personaError(request, 404, 'not_found', 'Persona not found'));
+  });
+  app.post('/v1/personas/:id/apply', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = request.body as { actor: string; reason?: string; variables?: Record<string, string> };
+    if (!body?.actor) return reply.status(400).send(personaError(request, 400, 'invalid_request', 'actor is required'));
+    try {
+      return { data: await applyPersona(personaTarget, id, { actor: body.actor, reason: body.reason, variables: body.variables }) };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const status = /not found/i.test(message) ? 404 : 400;
+      return reply.status(status).send(personaError(request, status, status === 404 ? 'not_found' : 'invalid_request', message));
+    }
+  });
+  app.post('/v1/personas/:id/model-request', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = request.body as {
+      actor: string; reason?: string; variables?: Record<string, string>;
+      provider?: string; model?: string; temperature?: number; maxTokens?: number; topP?: number
+    };
+    if (!body?.actor) return reply.status(400).send(personaError(request, 400, 'invalid_request', 'actor is required'));
+    let requestOptions;
+    try {
+      requestOptions = modelRequestOptionsSchema.parse({
+        provider: body.provider, model: body.model, temperature: body.temperature,
+        maxTokens: body.maxTokens, topP: body.topP
+      });
+    } catch (error) {
+      return reply.status(400).send(personaError(request, 400, 'invalid_request', error instanceof Error ? error.message : String(error)));
+    }
+    try {
+      const applied = await applyPersona(personaTarget, id, { actor: body.actor, reason: body.reason, variables: body.variables });
+      return { data: { applicationId: applied.applicationId, receipt: applied.receipt, warnings: applied.warnings, ...buildModelRequest(applied.prompt, requestOptions) } };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const status = /not found/i.test(message) ? 404 : 400;
+      return reply.status(status).send(personaError(request, status, status === 404 ? 'not_found' : 'invalid_request', message));
+    }
+  });
+
   app.get('/v1/errors', async () => ({
     catalog: [
       { code: 'invalid_request', httpStatus: 400, description: 'The request body or query was missing a required field.' },
       { code: 'unauthorized', httpStatus: 401, description: 'A valid bearer token (Authorization: Bearer <token>) is required when auth is enabled.' },
       { code: 'rate_limited', httpStatus: 429, description: 'Too many requests. Respect the Retry-After header and x-ratelimit-remaining.' },
-      { code: 'not_found', httpStatus: 404, description: 'The referenced scan, audit, rule, or remediation plan was not found.' },
+      { code: 'not_found', httpStatus: 404, description: 'The referenced scan, audit, rule, remediation plan, or persona was not found.' },
       { code: 'remediation_conflict', httpStatus: 409, description: 'A remediation transition was rejected: wrong state, compare-and-swap failure, or two-person violation.' },
       { code: 'request_failed', httpStatus: 400, description: 'An unexpected operational error occurred while processing the request.' }
     ]

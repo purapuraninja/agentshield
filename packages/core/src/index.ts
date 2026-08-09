@@ -180,7 +180,7 @@ export const runtimeEventTypeSchema = z.enum([
   'agent.run.started', 'source.read', 'model.requested', 'model.responded', 'memory.proposed',
   'memory.written', 'memory.retrieved', 'policy.evaluated', 'approval.requested',
   'approval.resolved', 'tool.requested', 'tool.executed', 'tool.failed',
-  'memory.quarantined', 'memory.restored', 'agent.run.completed'
+  'memory.quarantined', 'memory.restored', 'persona.applied', 'agent.run.completed'
 ]);
 
 export const runtimeEventSchema = z.object({
