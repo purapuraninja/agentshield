@@ -1,9 +1,8 @@
 import { useState } from 'react';
 import { Icon } from './App.js';
+import { apiErrorMessage, apiFetch } from './api.js';
 
 interface PolicyDecision { outcome: string; reasons: string[]; matchedRules: string[]; trace?: unknown }
-
-const apiUrl = (import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:4141').replace(/\/$/, '');
 
 export function Policies() {
   const [reportJson, setReportJson] = useState('');
@@ -18,9 +17,9 @@ export function Policies() {
       let policy: unknown;
       try { policy = JSON.parse(policyYaml); } catch { policy = policyYaml; }
       const report = JSON.parse(reportJson);
-      const response = await fetch(`${apiUrl}/v1/policies/evaluate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ report, policy }) });
+      const response = await apiFetch('/v1/policies/evaluate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ report, policy }) });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error?.message ?? 'Evaluation failed');
+      if (!response.ok) throw new Error(await apiErrorMessage(response, 'Evaluation failed'));
       setDecision(data);
     } catch (evaluateError) { setError(evaluateError instanceof Error ? evaluateError.message : String(evaluateError)); }
     finally { setLoading(false); }

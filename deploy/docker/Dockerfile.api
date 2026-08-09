@@ -13,6 +13,9 @@ FROM node:22-alpine
 WORKDIR /app
 ENV NODE_ENV=production AGENTSHIELD_HOST=0.0.0.0 AGENTSHIELD_PORT=4141 AGENTSHIELD_DATA_DIR=/data
 COPY --from=build /app/apps/api/dist/server.cjs ./server.cjs
+# Ensure the data directory is writable by the non-root `node` user. Fresh named volumes inherit
+# this ownership, so the API can persist scans, audits, and remediation state without EACCES.
+RUN mkdir -p /data && chown -R node:node /data
 USER node
 EXPOSE 4141
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

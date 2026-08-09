@@ -195,8 +195,10 @@ describe('sharper memory detectors', () => {
   });
 
   it('ignores malformed ttl labels instead of crashing the audit', async () => {
+    // Created recently so the record stays inside the working-type freshness window regardless of
+    // when the suite runs; the malformed ttl:abc label must be ignored, not treated as a TTL.
     const report = await auditWith([
-      { id: 'bad-ttl', content: 'the migration is scheduled', type: 'working', created_at: '2026-08-01T00:00:00Z', labels: ['ttl:abc'], source_kind: 'manual' }
+      { id: 'bad-ttl', content: 'the migration is scheduled', type: 'working', created_at: new Date(Date.now() - 2 * 86_400_000).toISOString(), labels: ['ttl:abc'], source_kind: 'manual' }
     ]);
     expect(report.status).toBe('completed');
     expect(report.findings.some((item) => item.ruleId === 'AS-ME-005')).toBe(false);

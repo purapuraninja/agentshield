@@ -1,0 +1,22 @@
+# AgentShield internal Caddyfile for VPS deployments where nginx terminates TLS on the host.
+# Caddy listens on :80 inside the container and is published to 127.0.0.1:8082 on the host.
+# Add an nginx server block that proxies your domain to http://127.0.0.1:8082.
+
+:80 {
+	encode gzip zstd
+
+	# API reverse proxy
+	handle /v1/* {
+		reverse_proxy api:4141
+	}
+	handle /health {
+		reverse_proxy api:4141
+	}
+
+	# Dashboard static files
+	handle {
+		root * /srv/dashboard
+		try_files {path} /index.html
+		file_server
+	}
+}

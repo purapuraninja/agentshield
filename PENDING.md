@@ -4,7 +4,7 @@ Dokumen ini adalah gap analysis antara `AGENTSHIELD_DEVELOPMENT_PLAN.md` dan imp
 v0.1.0 saat ini. Tujuannya adalah menjelaskan apa yang belum selesai, mengapa belum dianggap
 production-ready, serta urutan implementasi yang aman.
 
-Terakhir diperbarui: 2026-08-08.
+Terakhir diperbarui: 2026-08-09.
 
 ## Arti status
 
@@ -25,7 +25,7 @@ Terakhir diperbarui: 2026-08-08.
 - [x] Quarantine/restore lokal berbasis sidecar dengan snapshot dan hash-chained audit log.
 - [x] Sanitized runtime event store dan evidence graph lokal.
 - [x] Loopback REST API dan dashboard lokal untuk overview, scan, findings, serta permissions.
-- [x] Lint, typecheck, 46 automated tests, cross-platform CI skeleton, Docker API, dan fixtures dasar.
+- [x] Lint, typecheck, 189 automated tests, cross-platform CI skeleton, Docker API, dan fixtures dasar.
 
 ## Ringkasan prioritas
 
@@ -268,30 +268,29 @@ Terakhir diperbarui: 2026-08-08.
 
 ## 7. Runtime SDK, policy gate, dan correlation — P1
 
-- [~] Ada event schema/store dan evidence graph lokal, tetapi belum menjadi SDK versioned yang
-  dipublikasikan.
-- [~] Runtime policy evaluator ada sebagai helper, belum mengintersep tindakan agent secara sinkron.
-- [ ] TypeScript runtime SDK public dan Python SDK.
+- [x] Event schema/store, evidence graph lokal, dan TypeScript SDK lokal (`AgentShieldGate` di
+  `packages/runtime/src/sdk.ts`) sudah tersedia: synchronous `beforeTool`/`beforeMemoryWrite`
+  policy gate, `requestApproval`/`resolveApproval`, per-action fail-open/fail-closed, signed action
+  receipts (`as1:` HMAC-SHA256), dan sanitized incident evidence graph. SDK versioned yang
+  dipublikasikan belum tersedia.
+- [ ] TypeScript SDK public (npm) dan Python SDK.
 - [ ] Adapter untuk dua framework agent pertama.
 - [ ] Proxy/collector dengan batching, retry, backpressure, offline buffering, dan deduplication.
-- [ ] Pre-tool dan pre-memory-write policy gate.
-- [ ] Approval request/resolve workflow.
-- [ ] Per-action fail-open/fail-closed configuration.
-- [ ] Signed action receipts dan sanitized incident evidence export.
 - [ ] Evidence graph persistence/query yang dapat diskalakan.
 - [ ] Incident replay dengan sanitized events.
 
 ### Cara mengimplementasikan
 
-1. Pisahkan package `runtime-sdk` dari collector dan publikasikan stable event schema fixtures.
-2. Sediakan middleware `beforeTool`, `afterTool`, `beforeMemoryWrite`, `afterMemoryWrite`, serta
-   retrieval hooks; setiap hook membawa trace/parent/causality IDs.
-3. Gate mengirim context yang sudah disanitasi ke policy engine dan mengembalikan allow, warn,
-   require approval, quarantine, atau block dalam latency budget.
-4. Simpan outbox lokal dengan monotonically increasing sequence dan event ID; ack hanya setelah
+1. [~] Pisahkan package `runtime-sdk` dari collector dan publikasikan stable event schema fixtures.
+2. [x] Sediakan middleware `beforeTool`, `beforeMemoryWrite`, serta approval hooks
+   (`requestApproval`/`resolveApproval` di `AgentShieldGate`); setiap hook membawa trace/parent/
+   causality IDs.
+3. [~] Gate mengirim context yang sudah disanitasi ke policy engine dan mengembalikan allow, warn,
+   require approval, quarantine, atau block dalam latency budget (latency budget belum ada).
+4. [ ] Simpan outbox lokal dengan monotonically increasing sequence dan event ID; ack hanya setelah
    collector melakukan durable persistence.
-5. Tanda tangani decision receipt yang mengikat policy version, input hash, result, timestamp, dan
-   actor/component identity.
+5. [x] Tanda tangani decision receipt yang mengikat policy version, input hash, result, timestamp,
+   dan actor/component identity (`as1:` HMAC-SHA256).
 
 ## 8. API, persistence, worker, dan reliability — P1
 
@@ -344,8 +343,8 @@ evaluasi lokal.
 - [~] Overview, scan form, findings, permission map, filtering, dan API connectivity tersedia.
 - [ ] Projects/agents/scans history dan trend data.
 - [ ] Finding assignment, comments, lifecycle, exception, dan reviewer workflow.
-- [~] Memory inventory/health view, conflict explorer, dan poisoning review queue sudah tersedia di
-  dashboard; quarantine plan center masih CLI/API only (approval/execution/restore UI belum ada).
+- [~] Memory inventory/health view, conflict explorer, poisoning review queue, dan perencanaan
+  quarantine sudah tersedia di dashboard; approval/execution/restore masih CLI/API only.
 - [~] Runtime trace graph explorer dengan evidence-gap visualization sudah tersedia di dashboard.
 - [~] Policy validator/simulator sudah tersedia di dashboard (evaluate report vs policy); editor,
   version history, publish, dan rollback belum ada.

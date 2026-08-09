@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Icon } from './App.js';
+import { apiErrorMessage, apiFetch } from './api.js';
 
 interface MemoryEvidence { path: string; excerpt: string; redacted?: boolean }
 interface MemoryFinding { id: string; ruleId: string; title: string; description: string; severity: string; category: string; remediation: string; status: string; evidence: MemoryEvidence[]; metadata: Record<string, unknown> }
@@ -11,7 +12,6 @@ interface MemoryReport {
 }
 interface RemediationPlan { planId: string; memoryId: string; externalId: string; action: string; state: string; planned: { actor: string; reason: string }; approved?: { actor: string } }
 
-const apiUrl = (import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:4141').replace(/\/$/, '');
 const dimensionNames: Array<[keyof MemoryAssessment, string]> = [
   ['freshness', 'Freshness'], ['authority', 'Authority'], ['integrity', 'Integrity'], ['corroboration', 'Corroboration'], ['sensitivity', 'Sensitivity'], ['poisonRisk', 'Poison risk']
 ];
@@ -28,11 +28,11 @@ export function Memory() {
     if (!target.trim()) return;
     setLoading(true); setError(''); setMessage('');
     try {
-      const response = await fetch(`${apiUrl}/v1/memory-audits`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target, privacyMode: 'pii-secrets' }) });
+      const response = await apiFetch('/v1/memory-audits', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target, privacyMode: 'pii-secrets' }) });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error?.message ?? 'Audit failed');
+      if (!response.ok) throw new Error(await apiErrorMessage(response, 'Audit failed'));
       setReport(data);
-      const planResponse = await fetch(`${apiUrl}/v1/memory-audits/${data.auditId}/remediation-plans`);
+      const planResponse = await apiFetch(`/v1/memory-audits/${data.auditId}/remediation-plans`);
       if (planResponse.ok) setPlans((await planResponse.json()).data);
     } catch (auditError) { setError(auditError instanceof Error ? auditError.message : String(auditError)); }
     finally { setLoading(false); }
@@ -40,7 +40,7 @@ export function Memory() {
 
   async function exportBundle() {
     if (!report) return;
-    const response = await fetch(`${apiUrl}/v1/memory-audits/${report.auditId}/export?format=bundle`);
+    const response = await apiFetch(`/v1/memory-audits/${report.auditId}/export?format=bundle`);
     const blob = new Blob([await response.text()], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a'); a.href = url; a.download = `agentshield-memory-${report.auditId}.json`; a.click();
@@ -50,10 +50,10 @@ export function Memory() {
   async function planQuarantine(finding: MemoryFinding) {
     const memoryId = String(finding.metadata.memoryId ?? finding.metadata.externalId ?? '');
     if (!memoryId || !report) return;
-    const response = await fetch(`${apiUrl}/v1/remediation/plan`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target: report.target, memoryId, action: 'quarantine', actor: 'dashboard', reason: `${finding.ruleId}: ${finding.title}` }) });
+    const response = await apiFetch('/v1/remediation/plan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target: report.target, memoryId, action: 'quarantine', actor: 'dashboard', reason: `${finding.ruleId}: ${finding.title}` }) });
     const data = await response.json();
     if (response.ok) setMessage(`Planned quarantine ${data.planId} (state: ${data.state}). Approve and execute via /v1/remediation/approve.`);
-    else setError(data.error?.message ?? 'Plan failed');
+    else setError(await apiErrorMessage(response, 'Plan failed'));
   }
 
   if (!report) return <section className="scanbar" aria-label="Memory audit"><div className="target"><span>Memory target</span><input aria-label="Memory target path" placeholder="path/to/memories.jsonl" value={target} onChange={(event) => setTarget(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && audit()} /></div><button className="primary" onClick={audit} disabled={loading || !target.trim()}><Icon name="scan" />{loading ? 'Auditing…' : 'Run memory audit'}</button>{error && <div className="error" role="alert"><Icon name="alert" /><span>{error}</span></div>}</section>;

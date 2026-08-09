@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Memory } from './Memory.js';
 import { RuntimeTraces } from './RuntimeTraces.js';
 import { Policies } from './Policies.js';
+import { apiErrorMessage, apiFetch, getToken, setToken } from './api.js';
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 interface Finding { id: string; ruleId: string; title: string; description: string; severity: Severity; category: string; confidence: string; remediation: string; status: string; evidence: Array<{ path: string; line?: number; excerpt: string }> }
@@ -26,7 +27,6 @@ export function Icon({ name, size = 18 }: { name: string; size?: number }) { ret
 
 const nav: Array<[string, string]> = [['grid','Overview'], ['scan','Findings'], ['brain','Memory'], ['trace','Runtime traces'], ['policy','Policies']];
 const severityOrder: Severity[] = ['critical', 'high', 'medium', 'low', 'info'];
-const apiUrl = (import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:4141').replace(/\/$/, '');
 
 export function App() {
   const [active, setActive] = useState('Overview');
@@ -35,16 +35,22 @@ export function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [online, setOnline] = useState(false);
+  const [token, setTokenState] = useState(getToken());
 
-  useEffect(() => { fetch(`${apiUrl}/health`).then((response) => setOnline(response.ok)).catch(() => setOnline(false)); }, []);
+  useEffect(() => { apiFetch('/health').then((response) => setOnline(response.ok)).catch(() => setOnline(false)); }, []);
+
+  function updateToken(value: string) {
+    setTokenState(value);
+    setToken(value);
+  }
   const counts = useMemo(() => Object.fromEntries(severityOrder.map((severity) => [severity, report?.findings.filter((item) => item.severity === severity && item.status === 'open').length ?? 0])), [report]);
 
   async function scan() {
     setLoading(true); setError('');
     try {
-      const response = await fetch(`${apiUrl}/v1/scans`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target }) });
+      const response = await apiFetch('/v1/scans', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target }) });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error?.message ?? 'Scan failed');
+      if (!response.ok) throw new Error(await apiErrorMessage(response, 'Scan failed'));
       setReport(data); setActive('Overview'); setOnline(true);
     } catch (scanError) { setError(scanError instanceof Error ? scanError.message : String(scanError)); }
     finally { setLoading(false); }
@@ -62,9 +68,9 @@ export function App() {
     </aside>
 
     <main id="top">
-      <header className="topbar"><div><div className="crumb">Workspace <span>/</span> Local project</div><h1>{active}</h1></div><div className={`service ${online ? 'online' : ''}`}><i></i>{online ? 'API connected' : 'API offline'}</div></header>
+      <header className="topbar"><div><div className="crumb">Workspace <span>/</span> Local project</div><h1>{active}</h1></div><div className="topbar-right"><input className="token-input" aria-label="AgentShield API token" type="password" placeholder="API token (as_…)" value={token} onChange={(event) => updateToken(event.target.value)} /><div className={`service ${online ? 'online' : ''}`}><i></i>{online ? 'API connected' : 'API offline'}</div></div></header>
       <section className="scanbar" aria-label="Start a scan"><div className="target"><span>Target</span><input aria-label="Scan target path" value={target} onChange={(event) => setTarget(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && scan()} /></div><button className="primary" onClick={scan} disabled={loading || !target.trim()}><Icon name="scan"/>{loading ? 'Scanning…' : 'Run local scan'}</button></section>
-      {error && <div className="error" role="alert"><Icon name="alert"/><span>{error}. Start the API with <code>pnpm dev:api</code>.</span></div>}
+      {error && <div className="error" role="alert"><Icon name="alert"/><span>{error} {online ? '' : 'Start the API or check connectivity.'}</span></div>}
 
       {active === 'Overview' && <Overview report={report} counts={counts} onViewFindings={() => setActive('Findings')} />}
       {active === 'Findings' && <Findings report={report} />}

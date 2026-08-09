@@ -1,0 +1,60 @@
+# AgentShield stack for VPS deployments where an existing nginx on the host terminates TLS.
+# Caddy serves the dashboard and proxies /v1/* and /health to the API, published only to
+# 127.0.0.1:8082 on the host. Add an nginx server block:
+#   proxy_pass http://127.0.0.1:8082;
+#
+# Requires a .env file in this directory with:
+#   AGENTSHIELD_API_TOKEN=as_<generated-token>
+#   AGENTSHIELD_ALLOWED_ORIGINS=https://your-domain.example.com
+#   VITE_API_URL=https://your-domain.example.com   (public API base baked into the dashboard SPA)
+#   AGENTSHIELD_SCAN_ROOT=/root/agentshield        (host directory mounted read-only at /scan-target)
+
+services:
+  api:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.api
+    environment:
+      AGENTSHIELD_HOST: 0.0.0.0
+      AGENTSHIELD_PORT: 4141
+      AGENTSHIELD_DATA_DIR: /data
+      AGENTSHIELD_API_TOKEN: ${AGENTSHIELD_API_TOKEN}
+      AGENTSHIELD_ALLOWED_ORIGINS: ${AGENTSHIELD_ALLOWED_ORIGINS}
+      AGENTSHIELD_RATE_LIMIT_MAX: 200
+      AGENTSHIELD_RATE_LIMIT_WINDOW_MS: 60000
+    volumes:
+      - agentshield-data:/data
+      # Host directory exposed read-only to the API so the dashboard can scan real VPS files.
+      # Target paths like /scan-target/<path> from the dashboard resolve under this directory.
+      - ${AGENTSHIELD_SCAN_ROOT:-/root/agentshield}:/scan-target:ro
+    networks:
+      - agentshield-internal
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  caddy:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.caddy
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://127.0.0.1:4141}
+    ports:
+      - "127.0.0.1:8082:80"
+    volumes:
+      - ./Caddyfile.shield:/etc/caddy/Caddyfile:ro
+    networks:
+      - agentshield-internal
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  agentshield-data:
+
+networks:
+  agentshield-internal:
+    driver: bridge
