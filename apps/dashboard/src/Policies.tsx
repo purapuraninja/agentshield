@@ -18,8 +18,8 @@ export function Policies() {
       try { policy = JSON.parse(policyYaml); } catch { policy = policyYaml; }
       const report = JSON.parse(reportJson);
       const response = await apiFetch('/v1/policies/evaluate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ report, policy }) });
-      const data = await response.json();
       if (!response.ok) throw new Error(await apiErrorMessage(response, 'Evaluation failed'));
+      const data = await response.json();
       setDecision(data);
     } catch (evaluateError) { setError(evaluateError instanceof Error ? evaluateError.message : String(evaluateError)); }
     finally { setLoading(false); }

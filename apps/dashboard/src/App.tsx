@@ -52,8 +52,8 @@ export function App() {
     setLoading(true); setError('');
     try {
       const response = await apiFetch('/v1/scans', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target }) });
-      const data = await response.json();
       if (!response.ok) throw new Error(await apiErrorMessage(response, 'Scan failed'));
+      const data = await response.json();
       setReport(data); setActive('Overview'); setOnline(true);
     } catch (scanError) { setError(scanError instanceof Error ? scanError.message : String(scanError)); }
     finally { setLoading(false); }

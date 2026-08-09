@@ -37,8 +37,8 @@ export function InjectionLab() {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ text })
       });
-      const data = await response.json();
       if (!response.ok) throw new Error(await apiErrorMessage(response, 'Detection failed'));
+      const data = await response.json();
       setFindings(data.data.findings.slice().sort(bySeverity));
       setChecked(true);
     } catch (labError) { setError(labError instanceof Error ? labError.message : String(labError)); }

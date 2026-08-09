@@ -29,8 +29,8 @@ export function Memory() {
     setLoading(true); setError(''); setMessage('');
     try {
       const response = await apiFetch('/v1/memory-audits', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target, privacyMode: 'pii-secrets' }) });
-      const data = await response.json();
       if (!response.ok) throw new Error(await apiErrorMessage(response, 'Audit failed'));
+      const data = await response.json();
       setReport(data);
       const planResponse = await apiFetch(`/v1/memory-audits/${data.auditId}/remediation-plans`);
       if (planResponse.ok) setPlans((await planResponse.json()).data);
@@ -51,9 +51,9 @@ export function Memory() {
     const memoryId = String(finding.metadata.memoryId ?? finding.metadata.externalId ?? '');
     if (!memoryId || !report) return;
     const response = await apiFetch('/v1/remediation/plan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target: report.target, memoryId, action: 'quarantine', actor: 'dashboard', reason: `${finding.ruleId}: ${finding.title}` }) });
+    if (!response.ok) { setError(await apiErrorMessage(response, 'Plan failed')); return; }
     const data = await response.json();
-    if (response.ok) setMessage(`Planned quarantine ${data.planId} (state: ${data.state}). Approve and execute via /v1/remediation/approve.`);
-    else setError(await apiErrorMessage(response, 'Plan failed'));
+    setMessage(`Planned quarantine ${data.planId} (state: ${data.state}). Approve and execute via /v1/remediation/approve.`);
   }
 
   if (!report) return <section className="scanbar" aria-label="Memory audit"><div className="target"><span>Memory target</span><input aria-label="Memory target path" placeholder="path/to/memories.jsonl" value={target} onChange={(event) => setTarget(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && audit()} /></div><button className="primary" onClick={audit} disabled={loading || !target.trim()}><Icon name="scan" />{loading ? 'Auditing…' : 'Run memory audit'}</button>{error && <div className="error" role="alert"><Icon name="alert" /><span>{error}</span></div>}</section>;

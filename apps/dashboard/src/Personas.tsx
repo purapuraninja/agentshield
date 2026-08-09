@@ -94,8 +94,10 @@ export function Personas() {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ definitionText, actor: registerActor.trim() || 'dashboard' })
       });
-      const data = await response.json();
+      // Read the body only on success; on failure apiErrorMessage consumes it to surface the
+      // server's message (reading json() twice throws and would replace it with the fallback).
       if (!response.ok) throw new Error(await apiErrorMessage(response, 'Registration failed'));
+      const data = await response.json();
       setMessage(`Registered ${data.data.id} v${data.data.version} (${data.data.name}).`);
       await refresh();
       setSelectedId(data.data.id);
@@ -114,8 +116,8 @@ export function Personas() {
       const response = await apiFetch(`/v1/personas/${selected.id}/model-request`, {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
       });
-      const data = await response.json();
       if (!response.ok) throw new Error(await apiErrorMessage(response, 'Model request failed'));
+      const data = await response.json();
       setResult(data.data);
       setMessage(`Applied ${selected.id} v${selected.version}; receipt ${data.data.receipt.slice(0, 18)}…`);
       await refresh();
