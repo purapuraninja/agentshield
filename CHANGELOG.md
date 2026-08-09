@@ -2,6 +2,47 @@
 
 All notable changes follow Keep a Changelog and semantic versioning.
 
+## [0.2.0] — 2026-08-09
+
+### Added
+
+- Agent persona system (`agentshield persona create|verify|render|apply|model|list|get`).
+  Personas are declarative YAML definitions (role, goals, guardrails, system-prompt template,
+  required/default variables) validated for shape, policy, and injection content before use.
+- Model provider adapters via `buildModelRequest` for OpenAI Chat Completions, Anthropic Messages,
+  Gemini, Mistral, Ollama, and the OpenAI Responses API, plus a generic pass-through provider.
+  `persona model` renders a persona and emits a provider-native chat request.
+- Hash-chained persona application receipts (`persona1:` … `personaN:`) that bind the persona
+  definition, rendered system prompt, variable values, and the applying actor, with an immutable
+  audit chain and context-scoped rollback.
+- Loopback API endpoints for persona registration (YAML definition text), apply, model-request
+  (provider/model validated before any receipt is recorded), listing, and application audit.
+- Runtime SDK bridge `applyPersonaToModel` (`@agentshield/runtime`): applies a persona from the
+  store, builds the provider-native model request, and records a `persona.applied` gate event with
+  an evidence-graph edge; recording is an explicit `{ gate, context }` option. The `persona.applied`
+  event type renders with its persona/version/digest metadata in the dashboard Runtime traces view.
+- Dashboard Personas view: register, apply, build model requests, and browse the application audit
+  chain with receipts.
+- Jailbreak detection rules `AS-SC-028` (jailbreak activation frameworks, Athena/ColdBrew-style:
+  activation banners, `[[AX:*]]` tokens, profile chains, `max-breaker`) and `AS-SC-029` (known
+  jailbreak personas/modes: DAN, Developer Mode, STAN, AIM, DUDE, God Mode, plus multi-turn
+  signatures such as Crescendo attacks, deceptive alignment, reward hacking, and sandbagging).
+  Generic terms (developer mode, god mode) and jailbreak intent phrases only fire when co-occurring
+  with activation artifacts to keep false positives low; findings are advisory and never auto-block.
+- Jailbreak-related vulnerable corpus fixtures (`athena-jailbreak`, `jailbreak-prompt`), threat
+  scenarios `T-15` and `T-16`, adversarial golden negatives, and a `jailbreak` badge on matching
+  findings in the dashboard.
+- Persona advisory injection scanner: warnings for jailbreak activation tokens, jailbreak
+  personas, and multi-turn attack phrases (warning, not rejection). Safe persona fixture
+  conformance test validating every `fixtures/safe/personas/*.yaml`.
+- Decision record ADR-006 documenting the jailbreak detection policy (distinctive artifacts fire
+  standalone; generic terms require co-occurrence; findings are advisory).
+
+### Notes
+
+- Only the persona and jailbreak-detection work since 0.1.0 is listed here; the remaining
+  [Unreleased] items stay unreleased.
+
 ## [Unreleased]
 
 ### Added
